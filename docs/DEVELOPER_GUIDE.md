@@ -125,6 +125,23 @@ CardCraft 采用双向互操作设计：
 
 ---
 
+### 6. 网络通信 4 大原语与 3 大事件钩子 (The 7 Network Primitives & Hooks)
+
+CardCraft 将所有网络与多人业务（聊天、私聊、房间、匹配、游戏指令路由）下放至 Scheme，Rust 宿主仅负责高并发套接字搬运：
+
+#### (1) Rust 注入的 4 大网络原语
+* **`(net-send! client-id message)`**：向指定的已连接客户端单播消息。
+* **`(net-broadcast! message)`**：向当前在线的所有客户端广播消息。
+* **`(net-disconnect! client-id)`**：强制断开指定客户端连接。
+* **`(system-time-now)`**：获取当前系统自 Unix 纪元起的高精度浮点秒数（`f64`），便于 Scheme 内置超时或计时器判定。
+
+#### (2) Scheme 响应的 3 大事件钩子
+* **`(on-net-connect! client-id)`**：当新客户端连入时自动触发，完成默认角色分配与在线表注册。
+* **`(on-net-disconnect! client-id)`**：当客户端断开连接时自动触发，清理在线表并广播离线消息。
+* **`(on-net-message! client-id message-string)`**：当收到客户端的文本包时触发，内置支持 `say`（公屏聊天）、`w`（私聊密语）、`nick`（改名）、`who`（查在线列表）以及 CAD 游戏指令转发。
+
+---
+
 ## 三、 开发者实战：如何给 Scheme 注册新的 Rust 接口？
 
 如果你想让 Scheme 支持更多底层能力（例如：音频音效、网络请求、SQLite 存储、物理震动），只需在 Rust 中使用 `RegisterFn` 注册函数即可。

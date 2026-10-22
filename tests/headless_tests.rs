@@ -1,6 +1,6 @@
 use cardcraft::buffer::VirtualScreen;
 use cardcraft::cad::CommandState;
-use cardcraft::engine::GameEngine;
+use cardcraft::engine::{GameEngine, NetEvent};
 
 #[test]
 fn test_initial_state() {
@@ -221,4 +221,96 @@ fn test_rust_interfaces_from_scheme() {
     let cmd_read = format!("(system-file-read \"{}\")", tmp_path);
     let fb_read = engine.execute_command(&cmd_read).unwrap();
     assert!(fb_read.contains("CardCraft Save Data 123"));
+}
+
+#[test]
+fn test_network_primitives() {
+    let mut engine = GameEngine::new().unwrap();
+
+    // 1. Test system-time-now
+    let time_str = engine.execute_command("(system-time-now)").unwrap();
+    let time_val: f64 = time_str.parse().expect("Expected float from system-time-now");
+    assert!(time_val > 1000000.0, "Timestamp was: {}", time_val);
+
+    // 2. Test net-send!
+    engine.execute_command("(net-send! 100 \"Hello Client 100\")").unwrap();
+    let events = engine.drain_net_events();
+    assert_eq!(events, vec![
+        NetEvent::Send { client_id: 100, message: "Hello Client 100".to_string() }
+    ]);
+
+    // 3. Test net-broadcast!
+    engine.execute_command("(net-broadcast! \"Server rebooting\")").unwrap();
+    let events = engine.drain_net_events();
+    assert_eq!(events, vec![
+        NetEvent::Broadcast { message: "Server rebooting".to_string() }
+    ]);
+
+    // 4. Test net-disconnect!
+    engine.execute_command("(net-disconnect! 100)").unwrap();
+    let events = engine.drain_net_events();
+    assert_eq!(events, vec![
+        NetEvent::Disconnect { client_id: 100 }
+    ]);
+}
+
+#[test]
+fn test_network_hooks_and_chat_and_whisper() {
+    let mut engine = GameEngine::new().unwrap();
+
+    // 1. Client 1 connects
+    engine.net_connect(1).unwrap();
+    let ev1 = engine.drain_net_events();
+    assert!(ev1.iter().any(|e| matches!(e, NetEvent::Send { client_id: 1, message } if message.contains("Welcome"))));
+    assert!(ev1.iter().any(|e| matches!(e, NetEvent::Broadcast { message } if message.contains("Player_1 connected"))));
+
+    // 2. Client 2 connects
+    engine.net_connect(2).unwrap();
+    let ev2 = engine.drain_net_events();
+    assert!(ev2.iter().any(|e| matches!(e, NetEvent::Send { client_id: 2, message } if message.contains("Welcome"))));
+    assert!(ev2.iter().any(|e| matches!(e, NetEvent::Broadcast { message } if message.contains("Player_2 connected"))));
+
+    // 3. Client 1 and Client 2 set nicknames
+    engine.net_message(1, "nick Alice").unwrap();
+    let ev_nick1 = engine.drain_net_events();
+    assert!(ev_nick1.iter().any(|e| matches!(e, NetEvent::Broadcast { message } if message.contains("Alice"))));
+
+    engine.net_message(2, "nick Bob").unwrap();
+    let ev_nick2 = engine.drain_net_events();
+    assert!(ev_nick2.iter().any(|e| matches!(e, NetEvent::Broadcast { message } if message.contains("Bob"))));
+
+    // 4. Client 1 speaks in public chat
+    engine.net_message(1, "say Good morning villagers!").unwrap();
+    let ev_chat = engine.drain_net_events();
+    assert_eq!(ev_chat, vec![
+        NetEvent::Broadcast { message: "[Alice]: Good morning villagers!".to_string() }
+    ]);
+
+    // 5. Client 1 sends private message (whisper) to Bob
+    engine.net_message(1, "w Bob Secret trade offer").unwrap();
+    let ev_whisper = engine.drain_net_events();
+    assert_eq!(ev_whisper, vec![
+        NetEvent::Send { client_id: 2, message: "[Private from Alice]: Secret trade offer".to_string() },
+        NetEvent::Send { client_id: 1, message: "[Private to Bob]: Secret trade offer".to_string() }
+    ]);
+
+    // 6. Client 2 queries who is online
+    engine.net_message(2, "who").unwrap();
+    let ev_who = engine.drain_net_events();
+    assert!(ev_who.iter().any(|e| matches!(e, NetEvent::Send { client_id: 2, message } if message.contains("Alice") && message.contains("Bob"))));
+
+    // 7. Client 2 executes CAD stack command through network
+    engine.net_message(2, "s 1 2").unwrap();
+    let ev_cad = engine.drain_net_events();
+    assert!(ev_cad.iter().any(|e| matches!(e, NetEvent::Send { client_id: 2, message } if message.contains("OK"))));
+
+    // Verify stack 2 is now Crafting
+    let snap = engine.get_snapshot().unwrap();
+    let s2 = snap.stacks.iter().find(|s| s.id == 2).unwrap();
+    assert_eq!(s2.status, "Crafting");
+
+    // 8. Client 1 disconnects
+    engine.net_disconnect(1).unwrap();
+    let ev_dc = engine.drain_net_events();
+    assert!(ev_dc.iter().any(|e| matches!(e, NetEvent::Broadcast { message } if message.contains("Alice disconnected"))));
 }

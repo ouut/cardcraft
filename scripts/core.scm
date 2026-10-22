@@ -21,6 +21,21 @@
           (car lst)
           (string-append (car lst) sep (join-strings (cdr lst) sep)))))
 
+;; Helper: Split string by whitespace into list of words
+(define (split-spaces str)
+  (let ([len (string-length str)])
+    (let loop ([i 0] [cur '()] [words '()])
+      (if (>= i len)
+          (if (null? cur)
+              (reverse words)
+              (reverse (cons (list->string (reverse cur)) words)))
+          (let ([ch (string-ref str i)])
+            (if (or (char=? ch #\space) (char=? ch #\tab) (char=? ch #\newline))
+                (if (null? cur)
+                    (loop (+ i 1) '() words)
+                    (loop (+ i 1) '() (cons (list->string (reverse cur)) words)))
+                (loop (+ i 1) (cons ch cur) words)))))))
+
 ;; Helper: Multiset operations
 (define (remove-one item lst)
   (cond
@@ -305,13 +320,16 @@
                 (add-log! (string-append "=== Moon " (number->string *world-moon*) " Begun! ===")))))
       #f)))
 
-;; CAD Command Handlers
-(define (game-input tokens)
-  (if (null? tokens)
-      "Empty command"
-      (let ([verb (car tokens)]
-            [args (cdr tokens)])
-        (cond
+;; CAD Command Handlers (supports both (game-input tokens) and (game-input cid tokens))
+(define (game-input . rest)
+  (let* ([has-cid? (> (length rest) 1)]
+         [cid (if has-cid? (car rest) #f)]
+         [tokens (if has-cid? (cadr rest) (car rest))])
+    (if (null? tokens)
+        "Empty command"
+        (let ([verb (car tokens)]
+              [args (cdr tokens)])
+          (cond
           ;; Stack: s <from> <to>
           [(or (equal? verb "s") (equal? verb "stack"))
            (if (< (length args) 2)
@@ -475,7 +493,7 @@
            "OK"]
 
           [else
-           (string-append "Unknown CAD command: " verb ". Type 'h' for help.")]))))
+           (string-append "Unknown CAD command: " verb ". Type 'h' for help.")])))))
 
 ;; JSON Serializer for Game View Snapshot
 (define (to-json-str v)
@@ -544,3 +562,121 @@
           (list 'stacks stacks-json)
           (list 'shop shop-json)
           (list 'logs logs-truncated))))))
+
+;;; =============================================================================
+;;; Network Hooks, Online State & Chat Dispatcher (The 3 Hooks)
+;;; =============================================================================
+
+(define *net-clients* '())
+
+(define (find-net-client cid)
+  (assoc cid *net-clients*))
+
+(define (get-net-client-name cid)
+  (let ([c (find-net-client cid)])
+    (if c (cadr c) (string-append "Player_" (number->string cid)))))
+
+(define (find-net-client-by-name name)
+  (let loop ([cs *net-clients*])
+    (cond
+      [(null? cs) #f]
+      [(equal? (cadr (car cs)) name) (car cs)]
+      [else (loop (cdr cs))])))
+
+(define (update-net-client-name! cid new-name)
+  (set! *net-clients*
+        (map (lambda (item)
+               (if (equal? (car item) cid)
+                   (list (car item) new-name (caddr item))
+                   item))
+             *net-clients*)))
+
+(define (remove-net-client! cid)
+  (set! *net-clients*
+        (filter (lambda (item) (not (equal? (car item) cid))) *net-clients*)))
+
+;; Hook 1: on-net-connect!
+(define (on-net-connect! cid)
+  (let ([default-name (string-append "Player_" (number->string cid))])
+    (set! *net-clients* (cons (list cid default-name "Lobby") *net-clients*))
+    (net-send! cid (string-append "=== Welcome to CardCraft Online! You are " default-name " ==="))
+    (net-broadcast! (string-append ">>> " default-name " connected to the server."))
+    "OK"))
+
+;; Hook 2: on-net-disconnect!
+(define (on-net-disconnect! cid)
+  (let ([c (find-net-client cid)])
+    (if c
+        (let ([name (cadr c)])
+          (remove-net-client! cid)
+          (net-broadcast! (string-append "<<< " name " disconnected from the server."))
+          "OK")
+        "OK")))
+
+;; Hook 3: on-net-message!
+(define (on-net-message! cid msg-str)
+  (let* ([c (find-net-client cid)]
+         [name (if c (cadr c) (string-append "Player_" (number->string cid)))]
+         [tokens (split-spaces msg-str)])
+    (if (null? tokens)
+        "Empty command"
+        (let ([verb (car tokens)]
+              [args (cdr tokens)])
+          (cond
+            ;; 1. Nickname: nick <new-name>
+            [(equal? verb "nick")
+             (if (null? args)
+                 (begin
+                   (net-send! cid "Usage: nick <new-name>")
+                   "Usage: nick <new-name>")
+                 (let ([new-name (car args)])
+                   (if (find-net-client-by-name new-name)
+                       (begin
+                         (net-send! cid (string-append "Name '" new-name "' is already taken."))
+                         "Name taken")
+                       (begin
+                         (update-net-client-name! cid new-name)
+                         (net-broadcast! (string-append "*** " name " is now known as " new-name "."))
+                         "OK"))))]
+
+            ;; 2. Public Chat: say <text...>
+            [(equal? verb "say")
+             (if (null? args)
+                 (begin
+                   (net-send! cid "Usage: say <message...>")
+                   "Usage: say <message...>")
+                 (let ([chat-text (join-strings args " ")])
+                   (net-broadcast! (string-append "[" name "]: " chat-text))
+                   (add-log! (string-append "[" name "]: " chat-text))
+                   "OK"))]
+
+            ;; 3. Whisper / Private Message: w <target> <text...> or tell <target> <text...>
+            [(or (equal? verb "w") (equal? verb "tell") (equal? verb "whisper"))
+             (if (< (length args) 2)
+                 (begin
+                   (net-send! cid "Usage: w <username> <message...>")
+                   "Usage: w <username> <message...>")
+                 (let* ([target-name (car args)]
+                        [chat-text (join-strings (cdr args) " ")]
+                        [target (find-net-client-by-name target-name)])
+                   (if (not target)
+                       (begin
+                         (net-send! cid (string-append "User '" target-name "' not found."))
+                         "User not found")
+                       (let ([target-cid (car target)])
+                         (net-send! target-cid (string-append "[Private from " name "]: " chat-text))
+                         (net-send! cid (string-append "[Private to " target-name "]: " chat-text))
+                         "OK"))))]
+
+            ;; 4. Who / Users list: who or users
+            [(or (equal? verb "who") (equal? verb "users") (equal? verb "online"))
+             (let* ([names (map (lambda (cl) (cadr cl)) *net-clients*)]
+                    [msg (string-append "Online users (" (number->string (length names)) "): " (join-strings names ", "))])
+               (net-send! cid msg)
+               msg)]
+
+            ;; 5. Otherwise: CAD Game Command (s 1 2, b 1, u 1, etc.)
+            [else
+             (let ([res (game-input cid tokens)])
+               (net-send! cid (string-append "Result: " res))
+               res)])))))
