@@ -197,3 +197,28 @@ fn test_lisp_god_mode() {
     let apple_found = snap.stacks.iter().any(|s| s.cards.contains(&"Apple".to_string()));
     assert!(apple_found, "Apple should have been spawned directly by Scheme!");
 }
+
+#[test]
+fn test_rust_interfaces_from_scheme() {
+    let mut engine = GameEngine::new().unwrap();
+
+    // 1. Test rust-random-int
+    let res = engine.execute_command("(rust-random-int 10 20)").unwrap();
+    let n: i64 = res.parse().expect("Expected integer from rust-random-int");
+    assert!(n >= 10 && n <= 20, "Number was: {}", n);
+
+    // 2. Test rust-millis
+    let res_time = engine.execute_command("(rust-millis)").unwrap();
+    let t: i64 = res_time.parse().expect("Expected timestamp from rust-millis");
+    assert!(t > 0);
+
+    // 3. Test rust-write-file and rust-read-file
+    let tmp_path = "/tmp/cardcraft_test_save.txt";
+    let cmd_write = format!("(rust-write-file \"{}\" \"CardCraft Save Data 123\")", tmp_path);
+    let fb_write = engine.execute_command(&cmd_write).unwrap();
+    assert_eq!(fb_write, "#true");
+
+    let cmd_read = format!("(rust-read-file \"{}\")", tmp_path);
+    let fb_read = engine.execute_command(&cmd_read).unwrap();
+    assert!(fb_read.contains("CardCraft Save Data 123"));
+}

@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use steel::steel_vm::engine::Engine;
+use steel::steel_vm::register_fn::RegisterFn;
 use crate::view::GameViewSnapshot;
 
 const CORE_SCRIPT: &str = include_str!("../scripts/core.scm");
@@ -11,6 +12,34 @@ pub struct GameEngine {
 impl GameEngine {
     pub fn new() -> Result<Self> {
         let mut vm = Engine::new();
+
+        // Register Rust interfaces accessible to Scheme
+        vm.register_fn("rust-log", |level: String, msg: String| {
+            eprintln!("[{level}] {msg}");
+        });
+
+        vm.register_fn("rust-random-int", |min: i64, max: i64| -> i64 {
+            if min >= max {
+                return min;
+            }
+            rand::random_range(min..=max)
+        });
+
+        vm.register_fn("rust-millis", || -> i64 {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0)
+        });
+
+        vm.register_fn("rust-write-file", |path: String, content: String| -> bool {
+            std::fs::write(path, content).is_ok()
+        });
+
+        vm.register_fn("rust-read-file", |path: String| -> String {
+            std::fs::read_to_string(path).unwrap_or_default()
+        });
+
         vm.run(CORE_SCRIPT)
             .map_err(|e| anyhow!("Failed to compile core.scm: {:?}", e))?;
         
@@ -37,7 +66,13 @@ impl GameEngine {
         if trimmed.starts_with('(') {
             let res = self.vm.run(trimmed.to_string())
                 .map_err(|e| anyhow!("Scheme eval error: {:?}", e))?;
-            return Ok(format!("{:?}", res.last()));
+            if let Some(val) = res.last() {
+                return match val {
+                    steel::rvals::SteelVal::StringV(s) => Ok(s.to_string()),
+                    other => Ok(format!("{}", other)),
+                };
+            }
+            return Ok("()".to_string());
         }
 
         // CAD command mode

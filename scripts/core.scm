@@ -42,6 +42,14 @@
     [(null? sub) super]
     [else (multiset-diff (remove-one (car sub) super) (cdr sub))]))
 
+;; Helper: Pick random item from list using Rust RNG bridge
+(define (random-choice lst)
+  (if (null? lst)
+      #f
+      (let* ([len (length lst)]
+             [idx (rust-random-int 0 (- len 1))])
+        (list-ref lst idx))))
+
 ;; Card Value Lookups
 (define (card-food-value card)
   (cond
@@ -401,22 +409,29 @@
                               (if (null? rem)
                                   (remove-stack id)
                                   (update-stack! (refresh-stack-recipe (make-stack id rem '() '() '() "Idle"))))
-                              ;; Drop 3 cards
-                              (spawn-card! "Wood")
-                              (spawn-card! "Stone")
-                              (spawn-card! "Berry")
-                              (add-log! "Opened Basic Pack! Got Wood, Stone, Berry.")
-                              "OK")]
+                              (let* ([pool '("Wood" "Stone" "BerryBush" "Berry" "Coin")]
+                                     [c1 (random-choice pool)]
+                                     [c2 (random-choice pool)]
+                                     [c3 (random-choice pool)])
+                                (spawn-card! c1)
+                                (spawn-card! c2)
+                                (spawn-card! c3)
+                                (add-log! (string-append "Opened Basic Pack! Got " c1 ", " c2 ", " c3 "."))
+                                "OK"))]
                            [(member "Pack:Food" cards)
                             (let ([rem (remove-one "Pack:Food" cards)])
                               (if (null? rem)
                                   (remove-stack id)
                                   (update-stack! (refresh-stack-recipe (make-stack id rem '() '() '() "Idle"))))
-                              (spawn-card! "Berry")
-                              (spawn-card! "Berry")
-                              (spawn-card! "Apple")
-                              (add-log! "Opened Food Pack! Got 2x Berry, 1x Apple.")
-                              "OK")]
+                              (let* ([pool '("Berry" "Berry" "Apple" "BerryBush")]
+                                     [c1 (random-choice pool)]
+                                     [c2 (random-choice pool)]
+                                     [c3 (random-choice pool)])
+                                (spawn-card! c1)
+                                (spawn-card! c2)
+                                (spawn-card! c3)
+                                (add-log! (string-append "Opened Food Pack! Got " c1 ", " c2 ", " c3 "."))
+                                "OK"))]
                            [else "No unopened pack in this stack."]))))))]
 
           ;; Sell: x <slot-id>
