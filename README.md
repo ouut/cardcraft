@@ -92,6 +92,7 @@ cargo test
 ## 📚 详细文档导航
 
 * 🏗️ **[系统架构设计文档 (docs/ARCHITECTURE.md)](docs/ARCHITECTURE.md)**：深入了解沙漏模型、Steel 解释器集成、虚拟缓冲层原理。
+* 🌌 **[游戏多品类扩展设计 (docs/GAME_EXTENSIONS.md)](docs/GAME_EXTENSIONS.md)**：时空事件坐标、地牢上下文压栈、多视口缩放与 8 大衍生游戏方案。
 * 🛠️ **[开发者与互操作指南 (docs/DEVELOPER_GUIDE.md)](docs/DEVELOPER_GUIDE.md)**：Rust 与 Steel Scheme 接口注册、互操作调用与二次开发。
 * 📖 **[CAD 命令与快捷键手册 (docs/CAD_COMMANDS.md)](docs/CAD_COMMANDS.md)**：完整命令语法、参数说明与操作技巧。
 * 🧪 **[Scheme 规则与 Mod 编写指南 (docs/SCHEME_DSL.md)](docs/SCHEME_DSL.md)**：自定义卡牌属性、新增合成配方与游戏机制扩展。
