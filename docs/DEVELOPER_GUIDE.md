@@ -99,28 +99,30 @@ CardCraft 采用双向互操作设计：
 
 ---
 
-### 4. 文件写入：`(system-file-write path content)`
+### 4. 文件写入（沙盒保护）：`(system-file-write path content)`
 * **说明**：将字符串保存至本地磁盘文件（用于存档或导出游戏数据）。
+* **安全沙盒 (Path Traversal Jail)**：所有文件写入被强制限制在当前游戏目录的 `<game_dir>/saves/` 目录下，系统自动创建该目录，拒绝任何 `../` 逃逸尝试。
 * **参数**：
-  * `path` (String): 文件绝对或相对路径。
+  * `path` (String): 文件相对路径（相对于 `<game_dir>/saves/`）。
   * `content` (String): 写入的内容（通常是 JSON 或 S 表达式）。
 * **返回值**：`(Boolean)` 写入成功返回 `#true`，失败返回 `#false`。
 * **示例**：
   ```scheme
-  (system-file-write "./saves/slot1.json" (game-render))
+  (system-file-write "slot1.json" (game-render))
   ```
 
 ---
 
-### 5. 文件读取：`(system-file-read path)`
-* **说明**：从本地磁盘读取文本文件（用于读档或加载外部扩展规则）。
+### 5. 文件读取（沙盒保护）：`(system-file-read path)`
+* **说明**：从本地磁盘读取文本文件（用于读档）。
+* **安全沙盒 (Path Traversal Jail)**：所有文件读取强制限定在 `<game_dir>/saves/` 目录下，禁止读取宿主系统文件。
 * **参数**：
-  * `path` (String): 文件路径。
+  * `path` (String): 文件相对路径（相对于 `<game_dir>/saves/`）。
 * **返回值**：`(String)` 文件内容；若读取失败返回空字符串 `""`。
 * **示例**：
   ```scheme
-  (let ([mod-code (system-file-read "./mods/extra_recipes.scm")])
-    (display mod-code))
+  (let ([saved-state (system-file-read "slot1.json")])
+    (display saved-state))
   ```
 
 ---

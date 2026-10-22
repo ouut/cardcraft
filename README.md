@@ -32,7 +32,30 @@ cargo run --release
 * 进入游戏后，使用底部命令行输入 CAD 命令进行卡牌操作。
 * 输入 `q` 或按下 `Ctrl+C` 退出。
 
-### 2. 运行自动化自检与演示
+### 2. 启动 Web 控制台与网络服务
+```bash
+# 启动混合 Web/WebSocket 服务 (默认端口 8080，静态目录 ./web)
+cargo run -- --ws 8080
+
+# 访问浏览器即可游玩：http://localhost:8080
+
+# 启动裸 TCP 纯文本行式服务端 (默认端口 9000，可用 nc/telnet/自动化脚本交互)
+cargo run -- --tcp 9000
+
+# 同时开启 Web 与 TCP 服务，后台运行指定游戏
+cargo run -- -g ./games/my_game --ws 8080 --tcp 9000 --headless
+```
+
+### 3. P2P 去中心化穿透联机 (Iroh QUIC)
+```bash
+# 主机启动（输出 Ticket 并拉起本地 http://localhost:8080 浏览器桥接）
+cargo run -- host
+
+# 客户端加入（输入好友 Ticket，自动在本地建立 Web 桥接 http://localhost:8080）
+cargo run -- join cardcraft://...
+```
+
+### 4. 运行自动化自检与演示
 ```bash
 # 运行内置无头自测，并在控制台打印虚拟渲染帧
 cargo run -- --test
@@ -41,11 +64,11 @@ cargo run -- --test
 cargo run -- --headless
 ```
 
-### 3. 运行全套单元与集成测试
+### 5. 运行全套单元与集成测试
 ```bash
 cargo test
 ```
-包含 10 个端到端单元测试，涵盖卡牌堆叠、配方倒计时生产、拆分、卡包买卖、月相饥饿结算与虚拟缓冲渲染。
+包含 19 个端到端单元与集成测试，涵盖卡牌堆叠、配方倒计时生产、拆分、卡包买卖、月相饥饿结算、虚拟缓冲渲染、Web/WS 嗅探复用与 P2P 桥接通信。
 
 ---
 
@@ -91,7 +114,11 @@ cargo test
 
 ## 📚 详细文档导航
 
-* 🏗️ **[系统架构设计文档 (docs/ARCHITECTURE.md)](docs/ARCHITECTURE.md)**：深入了解沙漏模型、Steel 解释器集成、虚拟缓冲层原理。
+* 🤖 **[AI Agent 接口与游戏开发手册 (docs/AGENT_API_REFERENCE.md)](docs/AGENT_API_REFERENCE.md)**：专为 AI Agent 设计的完整知识库，涵盖 Scheme 注入原语、事件钩子、状态模式与游戏生成标准。
+* 💻 **[命令行参数与网络运行参考 (docs/CLI_REFERENCE.md)](docs/CLI_REFERENCE.md)**：所有 CLI 参数、端口嗅探、多协议服务与 P2P 本地桥接详解。
+* 🏗️ **[系统架构设计文档 (docs/ARCHITECTURE.md)](docs/ARCHITECTURE.md)**：深入了解沙漏模型、Steel 解释器集成、虚拟缓冲层原理与 Actor 线程模型。
+* 🌐 **[网络模块技术文档 (docs/NETWORK_MODULE.md)](docs/NETWORK_MODULE.md)**：基于 Scheme 的多人业务（聊天、私聊、房间隔离、天梯对战、交易行）实现。
+* 📡 **[网络架构设计文档 (docs/NETWORK_ARCHITECTURE.md)](docs/NETWORK_ARCHITECTURE.md)**：无锁网络通道设计与数据流转拓扑。
 * 🌌 **[游戏多品类扩展设计 (docs/GAME_EXTENSIONS.md)](docs/GAME_EXTENSIONS.md)**：时空事件坐标、地牢上下文压栈、多视口缩放与 8 大衍生游戏方案。
 * 🛠️ **[开发者与互操作指南 (docs/DEVELOPER_GUIDE.md)](docs/DEVELOPER_GUIDE.md)**：Rust 与 Steel Scheme 接口注册、互操作调用与二次开发。
 * 📖 **[CAD 命令与快捷键手册 (docs/CAD_COMMANDS.md)](docs/CAD_COMMANDS.md)**：完整命令语法、参数说明与操作技巧。
