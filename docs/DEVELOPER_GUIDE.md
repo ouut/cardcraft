@@ -140,6 +140,9 @@ CardCraft 将所有网络与多人业务（聊天、私聊、房间、匹配、�
 * **`(net-on-disconnect! client-id)`**：当客户端断开连接时自动触发，清理在线表并广播离线消息。
 * **`(net-on-message! client-id message-string)`**：当收到客户端的文本包时触发，内置支持 `say`（公屏聊天）、`w`（私聊密语）、`nick`（改名）、`who`（查在线列表）以及 CAD 游戏指令转发。
 
+> [!TIP]
+> 详细网络业务实现场景（聊天室、私聊、房间隔离、天梯匹配、交易行、防刷频与风控）与完整 Scheme 源码，请参阅专属技术文档：[NETWORK_MODULE.md](NETWORK_MODULE.md)。
+
 ---
 
 ## 三、 开发者实战：如何给 Scheme 注册新的 Rust 接口？

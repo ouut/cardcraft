@@ -4,6 +4,9 @@
 
 由于 CardCraft 采用了 **“狭窄接口层 (The Narrow Waist)”** 与 **“无头虚拟缓冲 (Headless Virtual Buffer)”** 设计，游戏内核与渲染表现层已实现了 100% 解耦，使网络化重构极其优雅高效。
 
+> [!NOTE]
+> 关于网络通信 7 大底层接口详解以及公屏聊天、私聊密语、房间隔离、天梯匹配、自由交易行的完整 Scheme 源码实现，请参阅专题技术指南：[NETWORK_MODULE.md](NETWORK_MODULE.md)。
+
 ---
 
 ## 一、 为什么 CardCraft 天生是“网络原生”的？
