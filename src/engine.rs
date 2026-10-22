@@ -93,18 +93,18 @@ impl GameEngine {
     }
 
     pub fn net_connect(&mut self, client_id: isize) -> Result<String> {
-        let code = format!("(on-net-connect! {})", client_id);
+        let code = format!("(net-on-connect! {})", client_id);
         self.eval_raw(&code)
     }
 
     pub fn net_message(&mut self, client_id: isize, msg: &str) -> Result<String> {
         let escaped = msg.replace('\\', "\\\\").replace('\"', "\\\"");
-        let code = format!("(on-net-message! {} \"{}\")", client_id, escaped);
+        let code = format!("(net-on-message! {} \"{}\")", client_id, escaped);
         self.eval_raw(&code)
     }
 
     pub fn net_disconnect(&mut self, client_id: isize) -> Result<String> {
-        let code = format!("(on-net-disconnect! {})", client_id);
+        let code = format!("(net-on-disconnect! {})", client_id);
         self.eval_raw(&code)
     }
 

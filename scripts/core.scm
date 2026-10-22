@@ -595,16 +595,16 @@
   (set! *net-clients*
         (filter (lambda (item) (not (equal? (car item) cid))) *net-clients*)))
 
-;; Hook 1: on-net-connect!
-(define (on-net-connect! cid)
+;; Hook 1: net-on-connect!
+(define (net-on-connect! cid)
   (let ([default-name (string-append "Player_" (number->string cid))])
     (set! *net-clients* (cons (list cid default-name "Lobby") *net-clients*))
     (net-send! cid (string-append "=== Welcome to CardCraft Online! You are " default-name " ==="))
     (net-broadcast! (string-append ">>> " default-name " connected to the server."))
     "OK"))
 
-;; Hook 2: on-net-disconnect!
-(define (on-net-disconnect! cid)
+;; Hook 2: net-on-disconnect!
+(define (net-on-disconnect! cid)
   (let ([c (find-net-client cid)])
     (if c
         (let ([name (cadr c)])
@@ -613,8 +613,8 @@
           "OK")
         "OK")))
 
-;; Hook 3: on-net-message!
-(define (on-net-message! cid msg-str)
+;; Hook 3: net-on-message!
+(define (net-on-message! cid msg-str)
   (let* ([c (find-net-client cid)]
          [name (if c (cadr c) (string-append "Player_" (number->string cid)))]
          [tokens (split-spaces msg-str)])

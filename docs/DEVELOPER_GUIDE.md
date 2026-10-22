@@ -136,9 +136,9 @@ CardCraft 将所有网络与多人业务（聊天、私聊、房间、匹配、�
 * **`(system-time-now)`**：获取当前系统自 Unix 纪元起的高精度浮点秒数（`f64`），便于 Scheme 内置超时或计时器判定。
 
 #### (2) Scheme 响应的 3 大事件钩子
-* **`(on-net-connect! client-id)`**：当新客户端连入时自动触发，完成默认角色分配与在线表注册。
-* **`(on-net-disconnect! client-id)`**：当客户端断开连接时自动触发，清理在线表并广播离线消息。
-* **`(on-net-message! client-id message-string)`**：当收到客户端的文本包时触发，内置支持 `say`（公屏聊天）、`w`（私聊密语）、`nick`（改名）、`who`（查在线列表）以及 CAD 游戏指令转发。
+* **`(net-on-connect! client-id)`**：当新客户端连入时自动触发，完成默认角色分配与在线表注册。
+* **`(net-on-disconnect! client-id)`**：当客户端断开连接时自动触发，清理在线表并广播离线消息。
+* **`(net-on-message! client-id message-string)`**：当收到客户端的文本包时触发，内置支持 `say`（公屏聊天）、`w`（私聊密语）、`nick`（改名）、`who`（查在线列表）以及 CAD 游戏指令转发。
 
 ---
 
