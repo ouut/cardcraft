@@ -592,3 +592,75 @@ async fn test_p2p_bridge_websocket_and_tcp() {
     }).await;
 }
 
+#[test]
+fn test_fully_generic_scheme_game_rendering() {
+    let custom_dir = std::env::temp_dir().join(format!("cardcraft_rpg_{}", rand::random::<u32>()));
+    std::fs::create_dir_all(&custom_dir).unwrap();
+
+    let custom_script = r#"
+(define *hp* 85)
+(define *max-hp* 100)
+(define (game-start!) #t)
+(define (game-update! dt) #t)
+(define (game-input . rest) "Attacked!")
+(define (game-render)
+  (string-append
+    "{"
+      "\"title\": \"Dungeon Crawler RPG\","
+      "\"metrics\": ["
+        "{\"label\": \"HP\", \"value\": \"85/100\", \"color\": \"green\"},"
+        "{\"label\": \"FLOOR\", \"value\": \"B3\", \"color\": \"cyan\"}"
+      "],"
+      "\"stacks\": ["
+        "{\"id\": 1, \"cards\": [\"Warrior\", \"Excalibur\"], \"status\": \"Combat\"},"
+        "{\"id\": 2, \"cards\": [\"GoblinKing\"], \"status\": \"Hostile\"}"
+      "],"
+      "\"panels\": ["
+        "{\"id\": \"atk\", \"name\": \"Attack\"},"
+        "{\"id\": \"cast\", \"name\": \"Cast Fireball\", \"cost\": 10}"
+      "],"
+      "\"logs\": [\"Encountered Goblin King on Floor B3!\"]"
+    "}"))
+"#;
+    std::fs::write(custom_dir.join("core.scm"), custom_script).unwrap();
+
+    let mut engine = GameEngine::with_game_dir(&custom_dir).expect("Failed to load RPG game");
+    let mut screen = VirtualScreen::new(90, 24).unwrap();
+    let cmd_state = CommandState::new();
+
+    let snap = engine.get_snapshot().expect("Failed to get generic snapshot");
+    assert_eq!(snap.title.as_deref(), Some("Dungeon Crawler RPG"));
+    assert_eq!(snap.metrics.len(), 2);
+    assert_eq!(snap.metrics[0].label, "HP");
+    assert_eq!(snap.metrics[0].value, "85/100");
+    assert_eq!(snap.metrics[1].label, "FLOOR");
+    assert_eq!(snap.metrics[1].value, "B3");
+    assert_eq!(snap.stacks.len(), 2);
+    assert_eq!(snap.stacks[0].cards, vec!["Warrior", "Excalibur"]);
+    assert_eq!(snap.panels.len(), 2);
+    assert_eq!(snap.panels[0].id, "atk");
+    assert_eq!(snap.panels[1].cost, Some(10));
+
+    // Render to VirtualScreen
+    screen.render(&snap, &cmd_state).unwrap();
+    let rendered = screen.to_string();
+
+    assert!(rendered.contains("Dungeon Crawler RPG"));
+    assert!(rendered.contains("HP: 85/100"));
+    assert!(rendered.contains("FLOOR: B3"));
+    assert!(rendered.contains("Warrior"));
+    assert!(rendered.contains("Excalibur"));
+    assert!(rendered.contains("GoblinKing"));
+    assert!(rendered.contains("Attack"));
+    assert!(rendered.contains("Cast Fireball"));
+    assert!(rendered.contains("Encountered Goblin King"));
+
+    // Verify completely free of Stacklands hardcoded concepts:
+    assert!(!rendered.contains("MOON"));
+    assert!(!rendered.contains("Food"));
+    assert!(!rendered.contains("SHOP:"));
+
+    std::fs::remove_dir_all(&custom_dir).ok();
+}
+
+

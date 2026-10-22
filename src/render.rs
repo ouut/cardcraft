@@ -11,85 +11,163 @@ use crate::view::GameViewSnapshot;
 
 pub fn render_ui(frame: &mut Frame, snapshot: &GameViewSnapshot, cmd: &CommandState) {
     let size = frame.area();
+    let show_panels = !snapshot.panels.is_empty();
+
+    let mut constraints = vec![
+        Constraint::Length(3), // Header
+        Constraint::Min(6),    // Board
+    ];
+    if show_panels {
+        constraints.push(Constraint::Length(3)); // Actions / Panels
+    }
+    constraints.push(Constraint::Length(5)); // Logs
+    constraints.push(Constraint::Length(3)); // Command Bar
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // Header
-            Constraint::Min(8),    // Board (Stacks)
-            Constraint::Length(3), // Shop & Hints
-            Constraint::Length(5), // Event Logs
-            Constraint::Length(3), // CAD Command Bar
-        ])
+        .constraints(constraints)
         .split(size);
 
     render_header(frame, chunks[0], snapshot);
     render_board(frame, chunks[1], snapshot);
-    render_shop(frame, chunks[2], snapshot);
-    render_logs(frame, chunks[3], snapshot);
-    render_command_bar(frame, chunks[4], cmd);
+
+    if show_panels {
+        render_panels(frame, chunks[2], snapshot);
+        render_logs(frame, chunks[3], snapshot);
+        render_command_bar(frame, chunks[4], cmd);
+    } else {
+        render_logs(frame, chunks[2], snapshot);
+        render_command_bar(frame, chunks[3], cmd);
+    }
 }
 
 fn render_header(frame: &mut Frame, area: Rect, snapshot: &GameViewSnapshot) {
-    let meta = &snapshot.meta;
+    let title = snapshot.title.as_deref().unwrap_or("CardCraft Console");
 
-    let food_style = if meta.food_current < meta.food_required {
-        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+    let mut spans = Vec::new();
+
+    if !snapshot.metrics.is_empty() {
+        // 1. Dynamic metric badges defined by Scheme
+        for (i, m) in snapshot.metrics.iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::raw(" | "));
+            }
+            let color = match m.color.as_deref() {
+                Some("red") => Color::Red,
+                Some("green") => Color::Green,
+                Some("yellow") => Color::Yellow,
+                Some("cyan") => Color::Cyan,
+                Some("magenta") => Color::Magenta,
+                Some("blue") => Color::Blue,
+                Some("white") => Color::White,
+                _ => Color::LightCyan,
+            };
+            spans.push(Span::styled(
+                format!(" {}: {} ", m.label, m.value),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ));
+        }
+    } else if snapshot.meta.moon > 0 || snapshot.meta.gold > 0 || snapshot.meta.card_count > 0 {
+        // 2. Legacy Stacklands header fallback
+        let meta = &snapshot.meta;
+        let food_style = if meta.food_current < meta.food_required {
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Green)
+        };
+
+        let card_style = if meta.card_count > meta.card_limit {
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+
+        let status_style = if meta.status == "RUNNING" {
+            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        };
+
+        let total_bar_chars = 10;
+        let filled = ((meta.day_progress * total_bar_chars as f64).round() as usize).min(total_bar_chars);
+        let empty = total_bar_chars.saturating_sub(filled);
+        let time_bar = format!("[{}{}]", "=".repeat(filled), ".".repeat(empty));
+
+        spans.push(Span::styled(format!(" MOON {} ", meta.moon), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)));
+        spans.push(Span::raw(" | "));
+        spans.push(Span::styled(format!("Day: {} {:.0}s", time_bar, meta.day_seconds_left), Style::default().fg(Color::Yellow)));
+        spans.push(Span::raw(" | "));
+        spans.push(Span::styled(format!("Food: {}/{}", meta.food_current, meta.food_required), food_style));
+        spans.push(Span::raw(" | "));
+        spans.push(Span::styled(format!("Gold: {}G", meta.gold), Style::default().fg(Color::LightYellow).add_modifier(Modifier::BOLD)));
+        spans.push(Span::raw(" | "));
+        spans.push(Span::styled(format!("Cards: {}/{}", meta.card_count, meta.card_limit), card_style));
+        spans.push(Span::raw(" | "));
+        spans.push(Span::styled(format!("[{}]", meta.status), status_style));
     } else {
-        Style::default().fg(Color::Green)
-    };
-
-    let card_style = if meta.card_count > meta.card_limit {
-        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::White)
-    };
-
-    let status_style = if meta.status == "RUNNING" {
-        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-    };
-
-    // Day timer bar (e.g. 10 chars)
-    let total_bar_chars = 10;
-    let filled = ((meta.day_progress * total_bar_chars as f64).round() as usize).min(total_bar_chars);
-    let empty = total_bar_chars.saturating_sub(filled);
-    let time_bar = format!("[{}{}]", "=".repeat(filled), ".".repeat(empty));
-
-    let header_line = Line::from(vec![
-        Span::styled(format!(" MOON {} ", meta.moon), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        Span::raw(" | "),
-        Span::styled(format!("Day: {} {:.0}s", time_bar, meta.day_seconds_left), Style::default().fg(Color::Yellow)),
-        Span::raw(" | "),
-        Span::styled(format!("Food: {}/{}", meta.food_current, meta.food_required), food_style),
-        Span::raw(" | "),
-        Span::styled(format!("Gold: {}G", meta.gold), Style::default().fg(Color::LightYellow).add_modifier(Modifier::BOLD)),
-        Span::raw(" | "),
-        Span::styled(format!("Cards: {}/{}", meta.card_count, meta.card_limit), card_style),
-        Span::raw(" | "),
-        Span::styled(format!("[{}]", meta.status), status_style),
-    ]);
+        // 3. Minimal default header
+        spans.push(Span::styled(
+            format!(" {} ", title),
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::raw(" | "));
+        spans.push(Span::styled(
+            format!("[{}]", snapshot.meta.status),
+            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+        ));
+    }
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" CardCraft (Console Stacklands) ");
-    let paragraph = Paragraph::new(header_line).block(block);
+        .title(format!(" {} ", title));
+    let paragraph = Paragraph::new(Line::from(spans)).block(block);
     frame.render_widget(paragraph, area);
 }
 
+/// Generic, dynamic card/item color styling
+/// Never hardcodes specific card names. Uses explicit color tags or deterministic hashing.
 fn card_style(card: &str) -> Style {
-    match card {
-        "Villager" => Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-        "Baby" => Style::default().fg(Color::LightCyan),
-        "BerryBush" | "Tree" | "Rock" => Style::default().fg(Color::Green),
-        "Berry" | "Apple" | "CookedBerry" => Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
-        "Wood" | "Stone" => Style::default().fg(Color::DarkGray),
-        "Campfire" | "House" | "Shed" => Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-        "Coin" => Style::default().fg(Color::LightYellow),
-        c if c.starts_with("Pack:") => Style::default().fg(Color::LightGreen).add_modifier(Modifier::BOLD),
-        _ => Style::default().fg(Color::White),
+    // 1. Explicit color tags: e.g. "[red]Dragon" or "[green]Berry"
+    if let Some(rest) = card.strip_prefix('[') {
+        if let Some((color_name, _)) = rest.split_once(']') {
+            let color = match color_name.to_lowercase().as_str() {
+                "red" => Color::Red,
+                "green" => Color::Green,
+                "yellow" => Color::Yellow,
+                "blue" => Color::Blue,
+                "magenta" => Color::Magenta,
+                "cyan" => Color::Cyan,
+                "gray" | "darkgray" => Color::DarkGray,
+                _ => Color::White,
+            };
+            return Style::default().fg(color).add_modifier(Modifier::BOLD);
+        }
     }
+
+    // 2. Special indicators
+    if card.starts_with("Pack:") {
+        return Style::default().fg(Color::LightGreen).add_modifier(Modifier::BOLD);
+    }
+    if card == "Coin" || card.ends_with('G') {
+        return Style::default().fg(Color::LightYellow);
+    }
+
+    // 3. Deterministic hash-based palette mapping for ANY custom card name
+    let mut hash: u32 = 5381;
+    for b in card.bytes() {
+        hash = ((hash << 5).wrapping_add(hash)).wrapping_add(b as u32);
+    }
+    const PALETTE: [Color; 7] = [
+        Color::Cyan,
+        Color::Green,
+        Color::Yellow,
+        Color::Magenta,
+        Color::LightCyan,
+        Color::LightGreen,
+        Color::LightYellow,
+    ];
+    let color = PALETTE[(hash as usize) % PALETTE.len()];
+    Style::default().fg(color).add_modifier(Modifier::BOLD)
 }
 
 fn render_board(frame: &mut Frame, area: Rect, snapshot: &GameViewSnapshot) {
@@ -104,7 +182,7 @@ fn render_board(frame: &mut Frame, area: Rect, snapshot: &GameViewSnapshot) {
             Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD),
         ));
 
-        // Cards list
+        // Items/Cards list
         for (i, card) in s.cards.iter().enumerate() {
             if i > 0 {
                 spans.push(Span::raw(" "));
@@ -140,65 +218,70 @@ fn render_board(frame: &mut Frame, area: Rect, snapshot: &GameViewSnapshot) {
 
     if items.is_empty() {
         items.push(ListItem::new(Line::from(Span::styled(
-            " No cards on board. Type 'b basic' to buy a card pack.",
+            " (Empty board) ",
             Style::default().fg(Color::DarkGray),
         ))));
     }
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Active Stacks (Each Line = One Stack of Cards) ");
+        .title(" Board & Slots ");
     let list = List::new(items).block(block);
     frame.render_widget(list, area);
 }
 
-fn render_shop(frame: &mut Frame, area: Rect, snapshot: &GameViewSnapshot) {
+fn render_panels(frame: &mut Frame, area: Rect, snapshot: &GameViewSnapshot) {
     let mut spans = vec![
-        Span::styled("SHOP: ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Span::styled("ACTIONS: ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
     ];
 
-    for (i, item) in snapshot.shop.iter().enumerate() {
+    for (i, item) in snapshot.panels.iter().enumerate() {
         if i > 0 {
             spans.push(Span::raw("  |  "));
         }
-        spans.push(Span::styled(
-            format!("[b {}] {} ({}G)", item.id, item.name, item.cost),
-            Style::default().fg(Color::White),
-        ));
+        let text = if let Some(cost) = item.cost {
+            format!("[b {}] {} ({}G)", item.id, item.name, cost)
+        } else if let Some(ref desc) = item.desc {
+            format!("[{}] {} ({})", item.id, item.name, desc)
+        } else {
+            format!("[{}] {}", item.id, item.name)
+        };
+        spans.push(Span::styled(text, Style::default().fg(Color::White)));
     }
 
-    spans.push(Span::raw("   |   "));
-    spans.push(Span::styled(
-        "CAD: s <from> <to> | u <id> | m <from> <to> | o <id> | x <id> | w [s] | p",
-        Style::default().fg(Color::DarkGray),
-    ));
-
-    let block = Block::default().borders(Borders::ALL).title(" Quick Store & Shortcuts ");
+    let title = snapshot.panel_title.as_deref().unwrap_or(" Quick Actions & Store ");
+    let block = Block::default().borders(Borders::ALL).title(format!(" {} ", title));
     let paragraph = Paragraph::new(Line::from(spans)).block(block);
     frame.render_widget(paragraph, area);
 }
 
 fn render_logs(frame: &mut Frame, area: Rect, snapshot: &GameViewSnapshot) {
-    let mut log_lines = Vec::new();
-    let display_logs = snapshot.logs.iter().take(3);
+    let mut items = Vec::new();
+    let max_lines = area.height.saturating_sub(2) as usize;
 
-    for log in display_logs {
-        let style = if log.contains("WARNING") || log.contains("starved") {
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
-        } else if log.contains("Produced:") || log.contains("Opened") {
+    let skip_count = snapshot.logs.len().saturating_sub(max_lines);
+    for log in snapshot.logs.iter().skip(skip_count) {
+        let style = if log.contains("Starved") || log.contains("Error") {
+            Style::default().fg(Color::Red)
+        } else if log.contains("Produced") || log.contains("Born") || log.contains("Harvest") {
             Style::default().fg(Color::Green)
+        } else if log.contains("Stacked") || log.contains("Bought") {
+            Style::default().fg(Color::LightYellow)
         } else {
             Style::default().fg(Color::Gray)
         };
-        log_lines.push(Line::from(vec![
-            Span::styled("• ", Style::default().fg(Color::Cyan)),
+
+        items.push(ListItem::new(Line::from(vec![
+            Span::styled("• ", Style::default().fg(Color::DarkGray)),
             Span::styled(log.clone(), style),
-        ]));
+        ])));
     }
 
-    let block = Block::default().borders(Borders::ALL).title(" Event Log ");
-    let paragraph = Paragraph::new(log_lines).block(block);
-    frame.render_widget(paragraph, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" System Event Log & Chat ");
+    let list = List::new(items).block(block);
+    frame.render_widget(list, area);
 }
 
 fn render_command_bar(frame: &mut Frame, area: Rect, cmd: &CommandState) {

@@ -145,59 +145,57 @@ CardCraft 采用**“窄腰沙漏（Narrow-Waist）”双核解耦架构**：
 
 ## 5. 快照视图 JSON 数据契约 (GameViewSnapshot Contract)
 
-`(game-render)` 导出的 JSON 必须满足 Rust 的 `GameViewSnapshot` 结构反序列化要求，字段规范如下：
+`(game-render)` 导出的 JSON 会被 Rust 宿主反序列化为 `GameViewSnapshot`。引擎已实现**100% 动态泛化**，绝不强制绑定任何特定玩法概念（如月相、食物、金币或商店）。
+
+### 5.1 通用游戏快照推荐格式 (Generic Schema)
+适用于任何卡牌、RPG、自走棋、策略或模拟经营游戏：
 
 ```json
 {
-  "meta": {
-    "moon": 1,
-    "day_progress": 0.45,
-    "day_seconds_left": 16.5,
-    "gold": 12,
-    "food_current": 4,
-    "food_required": 2,
-    "card_count": 7,
-    "card_limit": 20,
-    "status": "Running"
-  },
+  "title": "Dungeon Crawler RPG",
+  "metrics": [
+    { "label": "HP", "value": "85/100", "color": "green" },
+    { "label": "FLOOR", "value": "B3", "color": "cyan" },
+    { "label": "GOLD", "value": "50G", "color": "yellow" }
+  ],
   "stacks": [
     {
       "id": 1,
-      "cards": ["Villager", "BerryBush"],
-      "progress": 2.5,
+      "cards": ["Warrior", "Excalibur"],
+      "progress": 0.5,
       "total_time": 4.0,
-      "recipe_name": "Harvest Berry",
-      "status": "Crafting"
+      "recipe_name": "Slash Attack",
+      "status": "Combat"
     },
     {
       "id": 2,
-      "cards": ["Wood"],
+      "cards": ["GoblinKing"],
       "progress": null,
       "total_time": null,
       "recipe_name": null,
-      "status": "Idle"
+      "status": "Hostile"
     }
   ],
-  "shop": [
-    {
-      "id": "basic",
-      "name": "Basic Idea Pack",
-      "cost": 3
-    }
+  "panels": [
+    { "id": "atk", "name": "Attack" },
+    { "id": "cast", "name": "Cast Fireball", "cost": 10 }
   ],
+  "panel_title": "Quick Actions",
   "logs": [
-    "Stacked [1] onto [2].",
-    "Recipe Harvest Berry completed!"
+    "Encountered Goblin King on Floor B3!"
   ]
 }
 ```
 
-### 字段类型说明：
-- `meta.moon`: `i32`，当前月度（天数）。
-- `meta.day_progress`: `f64`，月度进度百分比（0.0 ~ 1.0）。
-- `meta.day_seconds_left`: `f64`，本月剩余秒数。
-- `meta.gold`: `i32`，当前玩家货币金币。
-- `meta.food_current`: `i32`，场上食物卡提供的总食物点数。
+### 字段说明：
+- **`title`** (`Option<String>`): 顶栏窗口自定义游戏标题。
+- **`metrics`** (`Vec<MetricItem>`): 顶栏徽章列表，每项包含 `label`、`value` 和可选 `color`（`"red"`, `"green"`, `"yellow"`, `"cyan"`, `"magenta"`, `"blue"`）。由 Scheme 动态定义，无任何硬编码指标。
+- **`stacks`** (`Vec<StackView>`): 场上卡槽/实体列表，包含 `id`, `cards`, `progress`, `total_time`, `recipe_name`, `status`。
+- **`panels`** (`Vec<PanelItem>`，别名 `shop`): 可选操作栏/商店条目列表。若为空，宿主 TUI 自动自适应折叠该面板，让位给卡牌区。
+- **`logs`** (`Vec<String>`): 事件与聊天日志。
+
+### 5.2 兼容支持格式 (Legacy Schema)
+若未提供 `metrics`，引擎自动兼容读取 `meta`（`moon`, `gold`, `food_current`, etc.）与 `shop`，确保原型脚本与单元测试无缝运行。
 - `meta.food_required`: `i32`，月末村民消耗的总食物点数。
 - `meta.card_count`: `i32`，场上卡牌总数。
 - `meta.card_limit`: `i32`，卡牌上限。

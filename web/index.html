@@ -65,10 +65,10 @@
 
   <header>
     <div style="display: flex; align-items: center; gap: 12px;">
-      <h2 style="font-size: 16px; color: var(--accent);">CardCraft Web Console</h2>
+      <h2 id="pageTitle" style="font-size: 16px; color: var(--accent);">CardCraft Web Console</h2>
       <span id="connBadge" class="status-badge disconnected">CONNECTING...</span>
     </div>
-    <div class="stats-row">
+    <div class="stats-row" id="statsRow">
       <div class="stat-item">Moon: <span id="moonVal">1</span></div>
       <div class="stat-item">Day: <span id="dayVal">30s</span></div>
       <div class="stat-item">Food: <span id="foodVal">1/1</span></div>
@@ -89,7 +89,7 @@
     </div>
 
     <div class="side-panel">
-      <div class="quick-actions">
+      <div class="quick-actions" id="quickActions">
         <button class="btn-chip" onclick="sendCmd('b basic')">Buy Basic Pack (3G)</button>
         <button class="btn-chip" onclick="sendCmd('b food')">Buy Food Pack (5G)</button>
         <button class="btn-chip" onclick="sendCmd('s 1 2')">Stack [1] onto [2]</button>
@@ -158,13 +158,35 @@
     }
 
     function renderSnapshot(snap) {
-      if (snap.meta) {
-        document.getElementById("moonVal").textContent = snap.meta.moon;
-        document.getElementById("dayVal").textContent = Math.round(snap.meta.day_seconds_left) + "s";
-        document.getElementById("foodVal").textContent = snap.meta.food_current + "/" + snap.meta.food_required;
-        document.getElementById("goldVal").textContent = snap.meta.gold + "G";
-        document.getElementById("cardCountVal").textContent = snap.meta.card_count + "/" + snap.meta.card_limit;
-        document.getElementById("gameStatus").textContent = "STATUS: " + snap.meta.status;
+      if (snap.title) {
+        document.getElementById("pageTitle").textContent = snap.title;
+      }
+
+      const statsRow = document.getElementById("statsRow");
+      if (snap.metrics && snap.metrics.length > 0) {
+        statsRow.innerHTML = snap.metrics.map(m => `
+          <div class="stat-item">${m.label}: <span style="${m.color ? 'color:' + m.color + '; font-weight:bold;' : 'color:var(--accent); font-weight:bold;'}">${m.value}</span></div>
+        `).join("");
+      } else if (snap.meta) {
+        if (document.getElementById("moonVal")) {
+          document.getElementById("moonVal").textContent = snap.meta.moon;
+          document.getElementById("dayVal").textContent = Math.round(snap.meta.day_seconds_left) + "s";
+          document.getElementById("foodVal").textContent = snap.meta.food_current + "/" + snap.meta.food_required;
+          document.getElementById("goldVal").textContent = snap.meta.gold + "G";
+          document.getElementById("cardCountVal").textContent = snap.meta.card_count + "/" + snap.meta.card_limit;
+          document.getElementById("gameStatus").textContent = "STATUS: " + snap.meta.status;
+        }
+      }
+
+      const actionsBox = document.getElementById("quickActions");
+      const panels = snap.panels || snap.shop;
+      if (panels && panels.length > 0 && actionsBox) {
+        actionsBox.style.display = "flex";
+        actionsBox.innerHTML = panels.map(p => {
+          const costStr = (p.cost !== null && p.cost !== undefined) ? ` (${p.cost}G)` : '';
+          const cmd = (p.cost !== null && p.cost !== undefined) ? `b ${p.id}` : p.id;
+          return `<button class="btn-chip" onclick="sendCmd('${cmd}')">[${p.id}] ${p.name}${costStr}</button>`;
+        }).join("");
       }
 
       if (snap.stacks) {
@@ -174,7 +196,7 @@
           const div = document.createElement("div");
           div.className = "stack-card";
 
-          const cardsHtml = s.cards.map(c => `<span class="card-pill ${c}">${c}</span>`).join("");
+          const cardsHtml = s.cards.map(c => `<span class="card-pill">${c}</span>`).join("");
           const prog = s.progress !== null && s.progress !== undefined ? Math.round(s.progress * 100) : 0;
           const statusText = s.recipe_name ? `${s.recipe_name} (${prog}%)` : s.status;
 
