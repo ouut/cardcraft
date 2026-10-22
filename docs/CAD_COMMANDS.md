@@ -153,7 +153,7 @@ CardCraft 的交互系统受到 AutoCAD / Vim 命令行的启发，遵循**“�
   ```
 * **手动触发月相结算**：
   ```scheme
-  (engine-tick! 35.0)
+  (game-update! 35.0)
   ```
 
 ---

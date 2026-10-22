@@ -35,9 +35,9 @@ CardCraft 旨在将《Stacklands》（堆叠大陆）的核心建造生存机制
 +-----------------------------------------------------------------------------+
 |                         狭窄接口层 (The Narrow Waist)                         |
 |                                                                             |
-|  * (engine-handle-cmd tokens)                                               |
-|  * (engine-tick! dt)                                                        |
-|  * (engine-get-view-json)  ===> Serde JSON Deserializer                     |
+|  * (game-input tokens)                                                       |
+|  * (game-update! dt)                                                         |
+|  * (game-render)            ===> Serde JSON Deserializer                     |
 +-----------------------------------------------------------------------------+
               ^                         |                        |
               | 只读视图导出            | 状态变更               | 状态演进
@@ -79,7 +79,7 @@ Scheme 天然擅长处理嵌套列表与符号，非常适合做卡牌的栈操�
 * **多重集配方模式匹配（Multiset Pattern Matcher）**：
   * `multiset-subset?` 递归检查当前栈中的卡牌多重集是否完全覆盖配方所需卡牌。
   * 当匹配成功，栈进入 `Crafting` 状态，挂载倒计时。
-* **时间推进与生产结算 (`engine-tick!`)**：
+* **时间推进与生产结算 (`game-update!`)**：
   * 遍历各栈推进进度，达标后自动扣减原料卡（`multiset-diff`），并将产物（`rec-outputs`）通过 `spawn-card!` 自动弹出到新栈槽中。
   * 监测月末饥饿，自动遍历场上食物卡扣除。
 
@@ -87,7 +87,7 @@ Scheme 天然擅长处理嵌套列表与符号，非常适合做卡牌的栈操�
 * 嵌入 `steel_core::steel_vm::engine::Engine`。
 * 在初始化时直接将 `core.scm` 嵌入二进制静态编译（`include_str!`），保证零外部路径依赖。
 * **双模解析分发**：
-  * 普通文本（如 `s 1 2`）：拆解为 Token 列表，调用 `(handle-cmd '("s" "1" "2"))`。
+  * 普通文本（如 `s 1 2`）：拆解为 Token 列表，调用 `(game-input '("s" "1" "2"))`。
   * 括号开头（如 `(spawn-card! "Apple")`）：作为 Scheme 代码直接在 VM 内动态求值（内置开发调试控制台）。
 
 ### 3. CAD 交互控制状态机 (`src/cad.rs`)
@@ -123,15 +123,15 @@ sequenceDiagram
 
     User->>CLI: 输入 "s 1 2" 并回车
     CLI->>Engine: execute_command("s 1 2")
-    Engine->>Scheme: (handle-cmd '("s" "1" "2"))
+    Engine->>Scheme: (game-input '("s" "1" "2"))
     Note over Scheme: 移动卡牌到槽位 2<br/>模式匹配命中 (Villager BerryBush)<br/>设置 timer = 4.0s
     Scheme-->>Engine: 返回 "OK"
     Engine-->>CLI: 记录反馈 "OK"
 
     loop 每 100ms 定时器
-        Engine->>Scheme: (engine-tick! 0.1)
+        Engine->>Scheme: (game-update! 0.1)
         Note over Scheme: timer 从 4.0s 递减<br/>到达 0 时销毁原料/弹出 Berry 卡
-        Engine->>Scheme: (engine-get-view-json)
+        Engine->>Scheme: (game-render)
         Scheme-->>Engine: 返回 GameViewSnapshot (JSON)
         Engine->>Screen: render_ui(snapshot, cmd_state)
         Screen-->>User: 刷新终端界面
@@ -154,7 +154,7 @@ sequenceDiagram
 引擎将世界抽象为正交的离散物理模型：
 
 1. **时间维（T 轴）与事件坐标**：
-   * 采用逻辑增量 `(engine-tick! dt)` 代替现实时间戳，使整个游戏具备完美的**确定性、可暂停性、时间快进（Wait）与无头单测能力**。
+   * 采用逻辑增量 `(game-update! dt)` 代替现实时间戳，使整个游戏具备完美的**确定性、可暂停性、时间快进（Wait）与无头单测能力**。
 2. **空间维（X 轴与 Z 轴）**：
    * 终端行代表 1D 空间槽位（Row），行内卡牌构成 Z 轴深度层级。
    * 通过 `Link`（空间管道）元语构建流水线拓扑，通过 `Zone`（手牌/战场/地牢）构建空间分区。

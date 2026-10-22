@@ -217,7 +217,7 @@
   (set! *world-stacks* (loop *world-stacks*)))
 
 ;; Initialize Game
-(define (engine-init!)
+(define (game-start!)
   (set! *world-moon* 1)
   (set! *world-day-time-left* 30.0)
   (set! *world-day-duration* 30.0)
@@ -235,7 +235,7 @@
   "Initialized")
 
 ;; Advance time tick
-(define (engine-tick! dt)
+(define (game-update! dt)
   (if (equal? *world-status* "RUNNING")
       (begin
         ;; 1. Update stack progress
@@ -306,7 +306,7 @@
       #f)))
 
 ;; CAD Command Handlers
-(define (handle-cmd tokens)
+(define (game-input tokens)
   (if (null? tokens)
       "Empty command"
       (let ([verb (car tokens)]
@@ -459,7 +459,7 @@
           ;; Wait: w [seconds]
           [(or (equal? verb "w") (equal? verb "wait"))
            (let ([dt (if (null? args) 1.0 (string->number (car args)))])
-             (engine-tick! dt)
+             (game-update! dt)
              (add-log! (string-append "Waited " (number->string dt) "s."))
              "OK")]
 
@@ -499,7 +499,7 @@
     [else "\"unknown\""]))
 
 ;; Export full game state as JSON
-(define (engine-get-view-json)
+(define (game-render)
   (let* ([day-prog (/ (- *world-day-duration* *world-day-time-left*) *world-day-duration*)]
          [stacks-json
            (map (lambda (s)

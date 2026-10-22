@@ -32,25 +32,25 @@ impl GameEngine {
                 .unwrap_or(0)
         });
 
-        vm.register_fn("rust-write-file", |path: String, content: String| -> bool {
+        vm.register_fn("system-file-write", |path: String, content: String| -> bool {
             std::fs::write(path, content).is_ok()
         });
 
-        vm.register_fn("rust-read-file", |path: String| -> String {
+        vm.register_fn("system-file-read", |path: String| -> String {
             std::fs::read_to_string(path).unwrap_or_default()
         });
 
         vm.run(CORE_SCRIPT)
             .map_err(|e| anyhow!("Failed to compile core.scm: {:?}", e))?;
         
-        vm.run("(engine-init!)")
+        vm.run("(game-start!)")
             .map_err(|e| anyhow!("Failed to initialize game engine: {:?}", e))?;
 
         Ok(Self { vm })
     }
 
     pub fn tick(&mut self, dt: f64) -> Result<()> {
-        let code = format!("(engine-tick! {:.4})", dt);
+        let code = format!("(game-update! {:.4})", dt);
         self.vm.run(code)
             .map_err(|e| anyhow!("Tick error: {:?}", e))?;
         Ok(())
@@ -82,7 +82,7 @@ impl GameEngine {
             .collect::<Vec<_>>()
             .join(" ");
 
-        let code = format!("(handle-cmd '({}))", tokens_str);
+        let code = format!("(game-input '({}))", tokens_str);
         let res = self.vm.run(code)
             .map_err(|e| anyhow!("Command error: {:?}", e))?;
 
@@ -97,7 +97,7 @@ impl GameEngine {
     }
 
     pub fn get_snapshot(&mut self) -> Result<GameViewSnapshot> {
-        let res = self.vm.run("(engine-get-view-json)")
+        let res = self.vm.run("(game-render)")
             .map_err(|e| anyhow!("Failed to get view json: {:?}", e))?;
 
         if let Some(steel::rvals::SteelVal::StringV(json_str)) = res.last() {
@@ -105,7 +105,7 @@ impl GameEngine {
                 .map_err(|e| anyhow!("JSON deserialization failed: {:?}, raw JSON: {}", e, json_str))?;
             Ok(snapshot)
         } else {
-            Err(anyhow!("engine-get-view-json did not return a string"))
+            Err(anyhow!("game-render did not return a string"))
         }
     }
 }

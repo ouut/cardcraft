@@ -21,8 +21,8 @@ CardCraft 采用双向互操作设计：
 │   │ • (rust-log level msg)                              │   │
 │   │ • (rust-random-int min max)                         │   │
 │   │ • (rust-millis)                                     │   │
-│   │ • (rust-write-file path content)                    │   │
-│   │ • (rust-read-file path)                             │   │
+│   │ • (system-file-write path content)                  │   │
+│   │ • (system-file-read path)                           │   │
 │   └─────────────────────────────────────────────────────┘   │
 │         │                                                   │
 │         │ 2. 注入并执行 core.scm                             │
@@ -30,10 +30,10 @@ CardCraft 采用双向互操作设计：
 │   ┌─────────────────────────────────────────────────────┐   │
 │   │ Steel Scheme 解释器空间 (Guest VM)                  │   │
 │   │                                                     │   │
-│   │   * (engine-init!)                                  │   │
-│   │   * (engine-tick! dt)                               │   │
-│   │   * (handle-cmd '("s" "1" "2"))                     │   │
-│   │   * (engine-get-view-json)                          │   │
+│   │   * (game-start!)                                   │   │
+│   │   * (game-update! dt)                               │   │
+│   │   * (game-input '("s" "1" "2"))                     │   │
+│   │   * (game-render)                                   │   │
 │   └─────────────────────────────────────────────────────┘   │
 │         ▲                                                   │
 │         │ 3. 抽取只读 JSON 快照 (Serde 反序列化)              │
@@ -99,7 +99,7 @@ CardCraft 采用双向互操作设计：
 
 ---
 
-### 4. 文件写入：`(rust-write-file path content)`
+### 4. 文件写入：`(system-file-write path content)`
 * **说明**：将字符串保存至本地磁盘文件（用于存档或导出游戏数据）。
 * **参数**：
   * `path` (String): 文件绝对或相对路径。
@@ -107,19 +107,19 @@ CardCraft 采用双向互操作设计：
 * **返回值**：`(Boolean)` 写入成功返回 `#true`，失败返回 `#false`。
 * **示例**：
   ```scheme
-  (rust-write-file "./saves/slot1.json" (engine-get-view-json))
+  (system-file-write "./saves/slot1.json" (game-render))
   ```
 
 ---
 
-### 5. 文件读取：`(rust-read-file path)`
+### 5. 文件读取：`(system-file-read path)`
 * **说明**：从本地磁盘读取文本文件（用于读档或加载外部扩展规则）。
 * **参数**：
   * `path` (String): 文件路径。
 * **返回值**：`(String)` 文件内容；若读取失败返回空字符串 `""`。
 * **示例**：
   ```scheme
-  (let ([mod-code (rust-read-file "./mods/extra_recipes.scm")])
+  (let ([mod-code (system-file-read "./mods/extra_recipes.scm")])
     (display mod-code))
   ```
 
@@ -200,20 +200,20 @@ impl GameEngine {
 ### 1. 无参驱动调用
 ```rust
 // 推进世界时钟 0.1 秒
-self.vm.run("(engine-tick! 0.1)")?;
+self.vm.run("(game-update! 0.1)")?;
 ```
 
 ### 2. 传参驱动调用
 ```rust
 // 执行用户输入的 CAD 命令（参数自动转为 Scheme 列表）
-let code = format!("(handle-cmd '({}))", tokens_str);
+let code = format!("(game-input '({}))", tokens_str);
 let res = self.vm.run(code)?;
 ```
 
 ### 3. 提取返回值并反序列化（极窄接口模型）
 Scheme 侧统一将展示数据打包为 JSON 字符串返回：
 ```rust
-let res = self.vm.run("(engine-get-view-json)")?;
+let res = self.vm.run("(game-render)")?;
 if let Some(steel::rvals::SteelVal::StringV(json_str)) = res.last() {
     let snapshot: GameViewSnapshot = serde_json::from_str(json_str)?;
     // 将快照送往虚拟缓冲层渲染...
