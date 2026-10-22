@@ -2,7 +2,10 @@ use cardcraft::buffer::VirtualScreen;
 use cardcraft::cad::CommandState;
 use cardcraft::engine::{GameEngine, NetEvent};
 use cardcraft::p2p::{ticket_to_addr, P2pClient, P2pHost};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use cardcraft::server::{run_tcp_server, run_web_server, spawn_engine_actor};
+use futures_util::{SinkExt, StreamExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio_tungstenite::tungstenite::protocol::Message;
 
 #[test]
 fn test_initial_state() {
@@ -214,15 +217,20 @@ fn test_rust_interfaces_from_scheme() {
     let t: i64 = res_time.parse().expect("Expected timestamp from rust-millis");
     assert!(t > 0);
 
-    // 3. Test system-file-write and system-file-read
-    let tmp_path = "/tmp/cardcraft_test_save.txt";
-    let cmd_write = format!("(system-file-write \"{}\" \"CardCraft Save Data 123\")", tmp_path);
+    // 3. Test system-file-write and system-file-read in sandboxed saves/
+    let save_file = "test_save.txt";
+    let cmd_write = format!("(system-file-write \"{}\" \"CardCraft Save Data 123\")", save_file);
     let fb_write = engine.execute_command(&cmd_write).unwrap();
     assert_eq!(fb_write, "#true");
 
-    let cmd_read = format!("(system-file-read \"{}\")", tmp_path);
+    let cmd_read = format!("(system-file-read \"{}\")", save_file);
     let fb_read = engine.execute_command(&cmd_read).unwrap();
     assert!(fb_read.contains("CardCraft Save Data 123"));
+
+    // 4. Test sandbox traversal prevention (writing outside sandbox is rejected)
+    let cmd_escape = "(system-file-write \"../../escape_hack.txt\" \"pwn\")";
+    let fb_escape = engine.execute_command(cmd_escape).unwrap();
+    assert_eq!(fb_escape, "#false");
 }
 
 #[test]
@@ -377,4 +385,140 @@ async fn test_iroh_p2p_connection_and_game_messaging() {
 
     let client_reply = client_task.await.unwrap();
     assert!(client_reply.contains("HOST_ACK"));
+}
+
+#[test]
+fn test_game_dir_loading_and_sandboxing() {
+    let custom_dir = std::path::PathBuf::from("/tmp/test_cardcraft_dungeon");
+    std::fs::create_dir_all(&custom_dir).unwrap();
+
+    // Write a custom game core.scm
+    let custom_script = r#"
+(define *game-title* "DungeonQuest")
+(define (game-start!) "Dungeon started!")
+(define (game-update! dt) "Ticked")
+(define (game-input . rest) "OK")
+(define (game-render) "{}")
+"#;
+    std::fs::write(custom_dir.join("core.scm"), custom_script).unwrap();
+
+    // Initialize engine with custom game dir
+    let mut engine = GameEngine::with_game_dir(&custom_dir).expect("Failed to load custom game");
+    assert_eq!(engine.game_dir(), custom_dir.as_path());
+    assert_eq!(engine.sandbox_dir(), custom_dir.join("saves").as_path());
+
+    // Verify custom game evaluated
+    let res = engine.eval_raw("*game-title*").unwrap();
+    assert_eq!(res, "DungeonQuest");
+
+    // Verify file write inside custom game saves/
+    let write_res = engine.execute_command("(system-file-write \"hero_slot.json\" \"hero data\")").unwrap();
+    assert_eq!(write_res, "#true");
+    assert!(custom_dir.join("saves/hero_slot.json").exists());
+
+    let content = std::fs::read_to_string(custom_dir.join("saves/hero_slot.json")).unwrap();
+    assert_eq!(content, "hero data");
+
+    // Clean up
+    std::fs::remove_dir_all(&custom_dir).ok();
+}
+
+#[tokio::test]
+async fn test_tcp_server_connection_and_command() {
+    let local = tokio::task::LocalSet::new();
+
+    local.run_until(async {
+        let engine = GameEngine::new().unwrap();
+        let (handle, engine_task) = spawn_engine_actor(engine);
+
+        // Pick a free local port
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let h_server = handle.clone();
+        tokio::spawn(async move {
+            run_tcp_server(h_server, port).await.ok();
+        });
+
+        // Wait for server to bind
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Connect via TCP
+        let mut stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await.expect("TCP connect failed");
+        
+        // Send CAD command over TCP
+        stream.write_all(b"say Hello from Netcat\n").await.unwrap();
+        stream.flush().await.unwrap();
+
+        // Read response
+        let mut reader = BufReader::new(stream);
+        let mut response = String::new();
+        reader.read_line(&mut response).await.unwrap();
+        assert!(response.contains("OK"));
+
+        drop(handle);
+        engine_task.abort();
+    }).await;
+}
+
+#[tokio::test]
+async fn test_web_server_static_file_and_websocket() {
+    let local = tokio::task::LocalSet::new();
+
+    local.run_until(async {
+        let engine = GameEngine::new().unwrap();
+        let (handle, engine_task) = spawn_engine_actor(engine);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let h_server = handle.clone();
+        let web_dir = std::path::PathBuf::from("web");
+        tokio::spawn(async move {
+            run_web_server(h_server, port, web_dir).await.ok();
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // 1. Test Static File Server (HTTP GET /)
+        let mut http_stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap();
+        http_stream.write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").await.unwrap();
+        http_stream.flush().await.unwrap();
+
+        let mut http_resp = Vec::new();
+        http_stream.read_to_end(&mut http_resp).await.unwrap();
+        let http_str = String::from_utf8_lossy(&http_resp);
+        assert!(http_str.contains("HTTP/1.1 200 OK"));
+        assert!(http_str.contains("CardCraft Web Console"));
+
+        // 2. Test WebSocket connection on the SAME port!
+        let ws_url = format!("ws://127.0.0.1:{}", port);
+        let (mut ws_stream, _) = tokio_tungstenite::connect_async(&ws_url).await.expect("WS connect failed");
+
+        // Read initial snapshot
+        let init_msg = ws_stream.next().await.unwrap().unwrap();
+        if let Message::Text(txt) = init_msg {
+            assert!(txt.contains("moon"));
+            assert!(txt.contains("stacks"));
+        } else {
+            panic!("Expected text snapshot message");
+        }
+
+        // Send command over WebSocket
+        ws_stream.send(Message::Text("s 1 2".into())).await.unwrap();
+
+        // Read response
+        let resp_msg = ws_stream.next().await.unwrap().unwrap();
+        if let Message::Text(txt) = resp_msg {
+            assert!(txt.contains("response"));
+            assert!(txt.contains("OK"));
+        } else {
+            panic!("Expected response message");
+        }
+
+        drop(handle);
+        engine_task.abort();
+    }).await;
 }

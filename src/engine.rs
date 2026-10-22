@@ -1,3 +1,4 @@
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use anyhow::{anyhow, Result};
 use steel::steel_vm::engine::Engine;
@@ -16,10 +17,45 @@ pub enum NetEvent {
 pub struct GameEngine {
     vm: Engine,
     outbox: Arc<Mutex<Vec<NetEvent>>>,
+    game_dir: PathBuf,
+    sandbox_dir: PathBuf,
+}
+
+fn resolve_sandboxed_path(sandbox_dir: &Path, rel_path: &str) -> Option<PathBuf> {
+    // Strip leading slashes to prevent root escaping
+    let clean_rel = rel_path.trim_start_matches('/').trim_start_matches('\\');
+    let candidate = sandbox_dir.join(clean_rel);
+
+    let canonical_sandbox = sandbox_dir.canonicalize().ok()?;
+
+    let parent = candidate.parent().unwrap_or(sandbox_dir);
+    std::fs::create_dir_all(parent).ok();
+
+    let canonical_target = if candidate.exists() {
+        candidate.canonicalize().ok()?
+    } else {
+        let canonical_parent = parent.canonicalize().ok()?;
+        canonical_parent.join(candidate.file_name()?)
+    };
+
+    if canonical_target.starts_with(&canonical_sandbox) {
+        Some(canonical_target)
+    } else {
+        eprintln!("[SECURITY WARNING] Sandbox violation prevented: {:?}", rel_path);
+        None
+    }
 }
 
 impl GameEngine {
     pub fn new() -> Result<Self> {
+        Self::with_game_dir(Path::new("."))
+    }
+
+    pub fn with_game_dir<P: AsRef<Path>>(game_dir_path: P) -> Result<Self> {
+        let game_dir = game_dir_path.as_ref().to_path_buf();
+        let sandbox_dir = game_dir.join("saves");
+        std::fs::create_dir_all(&sandbox_dir).ok();
+
         let mut vm = Engine::new();
         let outbox = Arc::new(Mutex::new(Vec::new()));
 
@@ -42,12 +78,25 @@ impl GameEngine {
                 .unwrap_or(0)
         });
 
-        vm.register_fn("system-file-write", |path: String, content: String| -> bool {
-            std::fs::write(path, content).is_ok()
+        let sb_write = sandbox_dir.clone();
+        vm.register_fn("system-file-write", move |path: String, content: String| -> bool {
+            if let Some(target) = resolve_sandboxed_path(&sb_write, &path) {
+                if let Some(p) = target.parent() {
+                    std::fs::create_dir_all(p).ok();
+                }
+                std::fs::write(target, content).is_ok()
+            } else {
+                false
+            }
         });
 
-        vm.register_fn("system-file-read", |path: String| -> String {
-            std::fs::read_to_string(path).unwrap_or_default()
+        let sb_read = sandbox_dir.clone();
+        vm.register_fn("system-file-read", move |path: String| -> String {
+            if let Some(target) = resolve_sandboxed_path(&sb_read, &path) {
+                std::fs::read_to_string(target).unwrap_or_default()
+            } else {
+                String::new()
+            }
         });
 
         // =========================================================================
@@ -78,13 +127,37 @@ impl GameEngine {
                 .unwrap_or(0.0)
         });
 
-        vm.run(CORE_SCRIPT)
+        // Script loading with priority:
+        // 1. <game_dir>/core.scm
+        // 2. <game_dir>/main.scm
+        // 3. Fallback to embedded CORE_SCRIPT
+        let core_path = game_dir.join("core.scm");
+        let main_path = game_dir.join("main.scm");
+        let script_content = if core_path.is_file() {
+            std::fs::read_to_string(&core_path)
+                .map_err(|e| anyhow!("Failed to read {}: {:?}", core_path.display(), e))?
+        } else if main_path.is_file() {
+            std::fs::read_to_string(&main_path)
+                .map_err(|e| anyhow!("Failed to read {}: {:?}", main_path.display(), e))?
+        } else {
+            CORE_SCRIPT.to_string()
+        };
+
+        vm.run(script_content)
             .map_err(|e| anyhow!("Failed to compile core.scm: {:?}", e))?;
         
         vm.run("(game-start!)")
             .map_err(|e| anyhow!("Failed to initialize game engine: {:?}", e))?;
 
-        Ok(Self { vm, outbox })
+        Ok(Self { vm, outbox, game_dir, sandbox_dir })
+    }
+
+    pub fn game_dir(&self) -> &Path {
+        &self.game_dir
+    }
+
+    pub fn sandbox_dir(&self) -> &Path {
+        &self.sandbox_dir
     }
 
     pub fn drain_net_events(&self) -> Vec<NetEvent> {
