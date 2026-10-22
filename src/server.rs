@@ -9,9 +9,9 @@ use tokio_tungstenite::tungstenite::protocol::Message;
 
 use crate::engine::GameEngine;
 
-static NEXT_CLIENT_ID: AtomicIsize = AtomicIsize::new(10);
+pub static NEXT_CLIENT_ID: AtomicIsize = AtomicIsize::new(10);
 
-fn get_next_client_id() -> isize {
+pub fn get_next_client_id() -> isize {
     NEXT_CLIENT_ID.fetch_add(1, Ordering::SeqCst)
 }
 
@@ -35,6 +35,10 @@ pub struct EngineHandle {
 }
 
 impl EngineHandle {
+    pub fn from_sender(tx: mpsc::Sender<EngineCommand>) -> Self {
+        Self { tx }
+    }
+
     pub async fn connect(&self, client_id: isize) {
         self.tx.send(EngineCommand::Connect { client_id }).await.ok();
     }

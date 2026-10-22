@@ -522,3 +522,73 @@ async fn test_web_server_static_file_and_websocket() {
         engine_task.abort();
     }).await;
 }
+
+#[tokio::test]
+async fn test_p2p_bridge_websocket_and_tcp() {
+    let local = tokio::task::LocalSet::new();
+
+    local.run_until(async {
+        // 1. Host side setup
+        let host = P2pHost::bind().await.expect("Host bind failed");
+        let ticket = host.ticket.clone();
+
+        let engine = GameEngine::new().unwrap();
+        let (engine_handle, engine_task) = spawn_engine_actor(engine);
+
+        let p2p_host_handle = engine_handle.clone();
+        tokio::spawn(async move {
+            cardcraft::p2p::run_p2p_host_listener(p2p_host_handle, host).await.ok();
+        });
+
+        // 2. Client P2P connection to Host
+        let client = P2pClient::new().await.expect("Client init failed");
+        let conn = client.connect_to_ticket(&ticket).await.expect("Client connect failed");
+        let (send_stream, recv_stream) = conn.open_bi().await.expect("open_bi failed");
+
+        // 3. Client spawns P2P actor returning EngineHandle
+        let (bridge_handle, client_task) = cardcraft::p2p::spawn_p2p_client_actor(send_stream, recv_stream);
+
+        // 4. Client starts local WebSocket server on an ephemeral port
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bridge_ws_port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let ws_bridge_handle = bridge_handle.clone();
+        let web_dir = std::path::PathBuf::from("web");
+        tokio::spawn(async move {
+            run_web_server(ws_bridge_handle, bridge_ws_port, web_dir).await.ok();
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+        // 5. Browser/Web client connects to local bridge
+        let ws_url = format!("ws://127.0.0.1:{}", bridge_ws_port);
+        let (mut ws_stream, _) = tokio_tungstenite::connect_async(&ws_url).await.expect("Bridge WS connect failed");
+
+        // Verify initial snapshot forwarded from remote host through P2P into local WebSocket
+        let init_msg = ws_stream.next().await.unwrap().unwrap();
+        if let Message::Text(txt) = init_msg {
+            assert!(txt.contains("moon"));
+            assert!(txt.contains("stacks"));
+        } else {
+            panic!("Expected text snapshot message");
+        }
+
+        // Send CAD command over WebSocket to local bridge -> forwarded to Host over Iroh QUIC
+        ws_stream.send(Message::Text("s 1 2".into())).await.unwrap();
+
+        let resp_msg = ws_stream.next().await.unwrap().unwrap();
+        if let Message::Text(txt) = resp_msg {
+            assert!(txt.contains("response"));
+            assert!(txt.contains("OK"));
+        } else {
+            panic!("Expected response message from Host");
+        }
+
+        drop(bridge_handle);
+        drop(engine_handle);
+        client_task.abort();
+        engine_task.abort();
+    }).await;
+}
+

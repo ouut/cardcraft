@@ -58,7 +58,22 @@ fn main() -> anyhow::Result<()> {
         None
     };
 
-    // Start network servers if requested
+    // 1. P2P Host mode
+    if args.iter().any(|arg| arg == "--p2p-host" || arg == "host") {
+        return run_p2p_host(&game_dir, ws_port, tcp_port, web_dir);
+    }
+
+    // 2. P2P Join mode
+    if let Some(pos) = args.iter().position(|arg| arg == "--p2p-join" || arg == "join") {
+        if let Some(ticket) = args.get(pos + 1) {
+            return run_p2p_join(ticket, ws_port, tcp_port, web_dir);
+        } else {
+            eprintln!("Usage: cardcraft join <ticket> [--ws [PORT]] [--tcp [PORT]] [--serve <DIR>]");
+            return Ok(());
+        }
+    }
+
+    // 3. Standalone network servers if requested
     if ws_port.is_some() || tcp_port.is_some() {
         return run_network_servers(game_dir, ws_port, tcp_port, web_dir);
     }
@@ -69,19 +84,6 @@ fn main() -> anyhow::Result<()> {
 
     if args.iter().any(|arg| arg == "--headless") {
         return run_headless_demo(&game_dir);
-    }
-
-    if args.iter().any(|arg| arg == "--p2p-host" || arg == "host") {
-        return run_p2p_host(&game_dir);
-    }
-
-    if let Some(pos) = args.iter().position(|arg| arg == "--p2p-join" || arg == "join") {
-        if let Some(ticket) = args.get(pos + 1) {
-            return run_p2p_join(ticket);
-        } else {
-            eprintln!("Usage: cardcraft --p2p-join <ticket>");
-            return Ok(());
-        }
     }
 
     // Default: run interactive TUI
@@ -157,9 +159,13 @@ NETWORK SERVERS (Can run concurrently):
     --tcp [PORT]                Start raw TCP line-based server (default port: 9000)
                                 Connect with: nc 127.0.0.1 9000
 
-P2P SERVERLESS MULTIPLAYER (Iroh QUIC):
-    host, --p2p-host            Start as an Iroh P2P Host (generates a NAT-traversing direct ticket)
-    join, --p2p-join <TICKET>   Join an Iroh P2P Host session using its ticket
+P2P SERVERLESS MULTIPLAYER (Iroh QUIC with Web Bridge):
+    host, --p2p-host [--ws [PORT]] [--tcp [PORT]] [--serve <DIR>]
+                                Start as an Iroh P2P Host (generates ticket).
+                                Optionally bridges to local Web/WebSocket (--ws 8080) and TCP (--tcp 9000).
+    join, --p2p-join <TICKET> [--ws [PORT]] [--tcp [PORT]] [--serve <DIR>]
+                                Join an Iroh P2P Host session using its ticket.
+                                Bridges to local Web/WebSocket (--ws 8080) so you can play via browser!
 
 SINGLE-PLAYER & DEBUG:
     (no arguments)              Start full interactive terminal TUI game
@@ -172,10 +178,17 @@ INFORMATION:
 "#);
 }
 
-fn run_p2p_host(game_dir: &Path) -> anyhow::Result<()> {
+fn run_p2p_host(
+    game_dir: &Path,
+    ws_port: Option<u16>,
+    tcp_port: Option<u16>,
+    web_dir: PathBuf,
+) -> anyhow::Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
+    let local = tokio::task::LocalSet::new();
     let gd = game_dir.to_path_buf();
-    rt.block_on(async {
+
+    local.block_on(&rt, async {
         println!("=== CardCraft Iroh P2P Host Starting ===");
         println!("Game Directory: {:?}", gd);
         let host = cardcraft::p2p::P2pHost::bind().await?;
@@ -183,38 +196,72 @@ fn run_p2p_host(game_dir: &Path) -> anyhow::Result<()> {
         println!("Endpoint ID: {}", host.addr.id);
         println!("\nShare this ticket with your friend to connect without any central server or public IP:\n");
         println!("  {}\n", host.ticket);
-        println!("Waiting for peer connection (press Ctrl+C to cancel)...");
 
-        let mut engine = GameEngine::with_game_dir(&gd)?;
-        if let Some(incoming) = host.endpoint.accept().await {
-            let conn = incoming.await?;
-            println!("\n>>> Peer connected via Iroh QUIC!");
-            let (mut send_stream, recv_stream) = conn.accept_bi().await?;
-            engine.net_connect(2)?;
+        let engine = GameEngine::with_game_dir(&gd)?;
+        let (handle, engine_task) = cardcraft::server::spawn_engine_actor(engine);
 
-            let mut reader = tokio::io::BufReader::new(recv_stream);
-            let mut line = String::new();
-            loop {
-                line.clear();
-                let bytes_read = tokio::io::AsyncBufReadExt::read_line(&mut reader, &mut line).await?;
-                if bytes_read == 0 {
-                    println!("Peer disconnected.");
-                    break;
+        let mut tasks = Vec::new();
+
+        // 1. P2P Host listener for incoming Iroh peer connections
+        let p2p_handle = handle.clone();
+        tasks.push(tokio::spawn(async move {
+            cardcraft::p2p::run_p2p_host_listener(p2p_handle, host).await
+        }));
+
+        // 2. TCP server (if requested)
+        if let Some(port) = tcp_port {
+            let h = handle.clone();
+            tasks.push(tokio::spawn(async move {
+                cardcraft::server::run_tcp_server(h, port).await
+            }));
+            println!("[P2P Host] TCP line interface: 127.0.0.1:{}", port);
+        }
+
+        // 3. Web/WebSocket server (if requested or by default)
+        let effective_ws_port = if ws_port.is_none() && tcp_port.is_none() {
+            Some(8080)
+        } else {
+            ws_port
+        };
+
+        if let Some(port) = effective_ws_port {
+            let h = handle.clone();
+            let wdir = web_dir.clone();
+            tasks.push(tokio::spawn(async move {
+                cardcraft::server::run_web_server(h, port, wdir).await
+            }));
+            println!("[P2P Host Web Bridge] Open in browser: http://localhost:{}", port);
+            println!("[P2P Host Web Bridge] WebSocket endpoint: ws://localhost:{}", port);
+        }
+
+        println!("\nP2P Host is running. Waiting for peers or web client connections (press Ctrl+C to exit)...");
+
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                println!("\nShutdown signal received. Exiting P2P Host...");
+            }
+            res = async {
+                for t in tasks {
+                    t.await??;
                 }
-                let trimmed = line.trim();
-                println!("[Peer CAD]: {}", trimmed);
-                let resp = engine.net_message(2, trimmed)?;
-
-                let reply = format!("{}\n", resp);
-                tokio::io::AsyncWriteExt::write_all(&mut send_stream, reply.as_bytes()).await?;
-                tokio::io::AsyncWriteExt::flush(&mut send_stream).await?;
+                Ok::<(), anyhow::Error>(())
+            } => {
+                res?;
             }
         }
+
+        drop(handle);
+        engine_task.await.ok();
         Ok(())
     })
 }
 
-fn run_p2p_join(ticket: &str) -> anyhow::Result<()> {
+fn run_p2p_join(
+    ticket: &str,
+    ws_port: Option<u16>,
+    tcp_port: Option<u16>,
+    web_dir: PathBuf,
+) -> anyhow::Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     let ticket_str = ticket.to_string();
     rt.block_on(async {
@@ -222,16 +269,59 @@ fn run_p2p_join(ticket: &str) -> anyhow::Result<()> {
         let client = cardcraft::p2p::P2pClient::new().await?;
         let conn = client.connect_to_ticket(&ticket_str).await?;
         println!(">>> Connected successfully to P2P Host!");
-        let (mut send_stream, recv_stream) = conn.open_bi().await?;
+        let (send_stream, recv_stream) = conn.open_bi().await?;
 
-        // Send an initial handshake
-        tokio::io::AsyncWriteExt::write_all(&mut send_stream, b"say Joined P2P session!\n").await?;
-        tokio::io::AsyncWriteExt::flush(&mut send_stream).await?;
+        let (handle, client_task) = cardcraft::p2p::spawn_p2p_client_actor(send_stream, recv_stream);
 
-        let mut reader = tokio::io::BufReader::new(recv_stream);
-        let mut line = String::new();
-        tokio::io::AsyncBufReadExt::read_line(&mut reader, &mut line).await?;
-        println!("Host response: {}", line.trim());
+        let mut tasks = Vec::new();
+
+        // 1. TCP bridge (if requested)
+        if let Some(port) = tcp_port {
+            let h = handle.clone();
+            tasks.push(tokio::spawn(async move {
+                cardcraft::server::run_tcp_server(h, port).await
+            }));
+            println!("[P2P TCP Bridge] Listening on port {} (nc 127.0.0.1 {})", port, port);
+        }
+
+        // 2. Web/WebSocket bridge (if requested or by default)
+        let effective_ws_port = if ws_port.is_none() && tcp_port.is_none() {
+            Some(8080)
+        } else {
+            ws_port
+        };
+
+        if let Some(port) = effective_ws_port {
+            let h = handle.clone();
+            let wdir = web_dir.clone();
+            tasks.push(tokio::spawn(async move {
+                cardcraft::server::run_web_server(h, port, wdir).await
+            }));
+            println!("[P2P Web Bridge] Open in browser: http://localhost:{}", port);
+            println!("[P2P Web Bridge] WebSocket endpoint: ws://localhost:{}", port);
+        }
+
+        // Fetch initial state handshake
+        let (initial_resp, _) = handle.message(0, "who".to_string()).await;
+        println!("Host status: {}", initial_resp);
+        println!("\nP2P Client Bridge is active. Press Ctrl+C to exit.");
+
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                println!("\nShutdown signal received. Exiting P2P Bridge...");
+            }
+            res = async {
+                for t in tasks {
+                    t.await??;
+                }
+                Ok::<(), anyhow::Error>(())
+            } => {
+                res?;
+            }
+        }
+
+        drop(handle);
+        client_task.await.ok();
         Ok(())
     })
 }

@@ -1,6 +1,10 @@
 use anyhow::{anyhow, Result};
 use iroh::endpoint::presets;
 use iroh::{Endpoint, EndpointAddr};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::sync::mpsc;
+
+use crate::server::{get_next_client_id, EngineCommand, EngineHandle};
 
 pub const ALPN: &[u8] = b"cardcraft/p2p/v1";
 
@@ -60,3 +64,152 @@ impl P2pClient {
         Ok(conn)
     }
 }
+
+pub fn spawn_p2p_client_actor(
+    mut send_stream: iroh::endpoint::SendStream,
+    recv_stream: iroh::endpoint::RecvStream,
+) -> (EngineHandle, tokio::task::JoinHandle<()>) {
+    let (tx, mut rx) = mpsc::channel::<EngineCommand>(100);
+    let mut reader = BufReader::new(recv_stream);
+
+    let join_handle = tokio::spawn(async move {
+        while let Some(cmd) = rx.recv().await {
+            match cmd {
+                EngineCommand::Message { client_id: _, text, reply } => {
+                    let mut line_to_send = text;
+                    line_to_send.push('\n');
+                    if send_stream.write_all(line_to_send.as_bytes()).await.is_err()
+                        || send_stream.flush().await.is_err()
+                    {
+                        reply.send(("P2P Connection Lost".to_string(), None)).ok();
+                        break;
+                    }
+
+                    let mut line = String::new();
+                    match reader.read_line(&mut line).await {
+                        Ok(n) if n > 0 => {
+                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
+                                let feedback = val.get("feedback")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let snap_str = val.get("snapshot")
+                                    .filter(|v| !v.is_null())
+                                    .map(|v| v.to_string());
+                                reply.send((feedback, snap_str)).ok();
+                            } else {
+                                reply.send((line.trim().to_string(), None)).ok();
+                            }
+                        }
+                        _ => {
+                            reply.send(("P2P Connection Closed".to_string(), None)).ok();
+                            break;
+                        }
+                    }
+                }
+                EngineCommand::GetSnapshot { reply } => {
+                    if send_stream.write_all(b"SNAPSHOT\n").await.is_err()
+                        || send_stream.flush().await.is_err()
+                    {
+                        reply.send(None).ok();
+                        break;
+                    }
+
+                    let mut line = String::new();
+                    match reader.read_line(&mut line).await {
+                        Ok(n) if n > 0 => {
+                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
+                                let snap_str = val.get("snapshot")
+                                    .filter(|v| !v.is_null())
+                                    .map(|v| v.to_string());
+                                reply.send(snap_str).ok();
+                            } else {
+                                reply.send(None).ok();
+                            }
+                        }
+                        _ => {
+                            reply.send(None).ok();
+                            break;
+                        }
+                    }
+                }
+                EngineCommand::Connect { .. } => {}
+                EngineCommand::Disconnect { .. } => {}
+                EngineCommand::Tick { .. } => {}
+            }
+        }
+    });
+
+    (EngineHandle::from_sender(tx), join_handle)
+}
+
+pub async fn run_p2p_host_listener(
+    handle: EngineHandle,
+    host: P2pHost,
+) -> Result<()> {
+    while let Some(incoming) = host.endpoint.accept().await {
+        let conn = match incoming.await {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[P2P Host] Incoming peer handshake failed: {:?}", e);
+                continue;
+            }
+        };
+
+        let h = handle.clone();
+        tokio::spawn(async move {
+            let client_id = get_next_client_id();
+            h.connect(client_id).await;
+            println!("[P2P Host] Peer #{} connected via Iroh QUIC.", client_id);
+
+            let (mut send_stream, recv_stream) = match conn.accept_bi().await {
+                Ok(streams) => streams,
+                Err(e) => {
+                    eprintln!("[P2P Host] accept_bi failed: {:?}", e);
+                    h.disconnect(client_id).await;
+                    return;
+                }
+            };
+
+            let mut reader = BufReader::new(recv_stream);
+            let mut line = String::new();
+
+            loop {
+                line.clear();
+                let bytes_read = match reader.read_line(&mut line).await {
+                    Ok(n) => n,
+                    Err(_) => break,
+                };
+                if bytes_read == 0 {
+                    break;
+                }
+                let trimmed = line.trim();
+                let (feedback, snap_json) = if trimmed == "SNAPSHOT" {
+                    let s = h.get_snapshot().await;
+                    (String::new(), s)
+                } else {
+                    h.message(client_id, trimmed.to_string()).await
+                };
+
+                let payload = serde_json::json!({
+                    "type": "response",
+                    "feedback": feedback,
+                    "snapshot": snap_json.and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                });
+
+                let mut out = serde_json::to_string(&payload).unwrap_or_default();
+                out.push('\n');
+                if send_stream.write_all(out.as_bytes()).await.is_err()
+                    || send_stream.flush().await.is_err()
+                {
+                    break;
+                }
+            }
+
+            println!("[P2P Host] Peer #{} disconnected.", client_id);
+            h.disconnect(client_id).await;
+        });
+    }
+    Ok(())
+}
+

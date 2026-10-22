@@ -113,19 +113,36 @@ cardcraft --ws 8080 --tcp 9000
 
 ---
 
-### 2.4 Iroh P2P 穿透联机 (`host` / `join`)
+### 2.4 Iroh P2P 穿透联机与本地 Web/TCP 桥接 (`host` / `join`)
 
-基于 Iroh QUIC 协议栈，提供无需公网 IP 和端口映射的 P2P 直连联机对战。
+基于 Iroh QUIC 协议栈，提供无需公网 IP 和端口映射的 P2P 直连联机对战。同时支持**本地 Web/TCP 协议桥接**（Local Web Bridge），使玩家或第三方客户端（如 Web 前端、Pixi.js、Vue/React、自动化 Bot）可以通过本地 `ws://localhost:8080` 无缝接入 P2P 对局！
 
+#### 1. Host 模式（服务端/主机）：
 ```bash
-# 主机端启动
+# 主机启动（默认开启 P2P 端点 + 本地 Web/WebSocket 桥接 8080）
 cardcraft host
-# 终端将输出生成的连接 Ticket:
-# > Ticket: cardcraft-ticket://...
 
-# 客户端加入
-cardcraft join cardcraft-ticket://...
+# 自定义 Web 端口、网页目录及 TCP 端口
+cardcraft host --ws 8080 --serve ./web --tcp 9000
 ```
+- 控制台将输出生成的直连 Ticket：`cardcraft://...`。
+- 主机玩家可直接在浏览器打开 `http://localhost:8080` 进行游玩。
+- 支持多个远端 P2P Peer 同时接入。
+
+#### 2. Join 模式（客户端/客机）：
+```bash
+# 加入对局（默认自动在本地拉起 Web 桥接 http://localhost:8080）
+cardcraft join cardcraft://...
+
+# 指定自定义 Web 端口（如两台设备或多开）
+cardcraft join cardcraft://... --ws 8081 --serve ./web
+
+# 通过命令行 / nc 接入本地 TCP 桥接
+cardcraft join cardcraft://... --tcp 9001
+```
+- 本地 `cardcraft` 负责底层的 Iroh QUIC P2P 加密隧道通信与 NAT 穿透。
+- 本地开启 `ws://localhost:8081`（以及静态 HTTP 托管），玩家直接打开浏览器即可游玩远端主机的游戏！
+- **第三方客户端开发者**无需编写任何 P2P / QUIC 代码，只需连接本地 WebSocket，发送 CAD 指令并监听 JSON 快照即可！
 
 ---
 
