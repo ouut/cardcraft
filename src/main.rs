@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use crossterm::{
-    event::{self, Event, KeyCode, KeyModifiers},
+    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -117,6 +117,11 @@ fn run_event_loop(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) ->
         let timeout = tick_rate.saturating_sub(last_tick.elapsed());
         if event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
+                // Windows Console emits both Press and Release events; filter out non-Press
+                if key.kind != KeyEventKind::Press {
+                    continue;
+                }
+
                 if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
                     break;
                 }
