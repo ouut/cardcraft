@@ -17,6 +17,16 @@ use cardcraft::render::render_ui;
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
 
+    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        print_help();
+        return Ok(());
+    }
+
+    if args.iter().any(|arg| arg == "--version" || arg == "-v") {
+        println!("cardcraft v{}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
     if args.iter().any(|arg| arg == "--test") {
         return run_self_test();
     }
@@ -40,6 +50,28 @@ fn main() -> anyhow::Result<()> {
 
     // Default: run interactive TUI
     run_interactive_tui()
+}
+
+fn print_help() {
+    println!(r#"CardCraft - A CAD-Driven Stacking Card Game in Steel Scheme & Rust
+
+USAGE:
+    cardcraft [OPTIONS]
+    cardcraft <COMMAND> [ARGS]
+
+OPTIONS:
+    -h, --help                  Print this help message
+    -v, --version               Print version information
+    --headless                  Run once in headless virtual buffer mode and output ASCII frame to stdout
+    --test                      Run internal headless self-test loop with state assertions
+
+P2P MULTIPLAYER:
+    host, --p2p-host            Start as an Iroh P2P Host (generates a NAT-traversing direct ticket)
+    join, --p2p-join <TICKET>   Join an Iroh P2P Host session using its ticket
+
+DEFAULT:
+    Running without arguments starts the full interactive terminal TUI game.
+"#);
 }
 
 fn run_p2p_host() -> anyhow::Result<()> {
