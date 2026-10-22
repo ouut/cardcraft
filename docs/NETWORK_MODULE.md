@@ -346,11 +346,69 @@ fn test_chat_and_whisper_flow() {
 
 ---
 
-## 五、 总结与最佳实践
+## 五、 Iroh P2P 直连网络架构 (Zero-Server P2P Gaming)
+
+CardCraft 现已原生集成 **Iroh P2P (QUIC)** 网络通信模块（`src/p2p.rs`），支持**零服务器、零公网 IP、跨家庭路由器自动打洞穿透（NAT Traversal）的端到端联机对战**。
+
+### 1. Iroh P2P 的技术优势
+* **加密公钥身份（Ed25519 NodeId）**：每个玩家自动拥有唯一的加密身份，无需注册账号；
+* **自动 NAT 打洞（Hole Punching & DERP Relays）**：通过 QUIC + STUN + 动态中继，处于不同家庭局域网/防火墙后的玩家可直接建立高速点对点直连；
+* **极简 Ticket 分享机制**：房主生成一段 `cardcraft://...` 票据文本，好友复制该票据即可秒连。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Alice as 玩家 A (P2P Host)
+    actor Bob as 玩家 B (P2P Joiner)
+    participant IrohA as Alice Iroh Endpoint
+    participant IrohB as Bob Iroh Endpoint
+    participant Scheme as Steel Scheme Engine
+
+    Alice->>IrohA: cardcraft host
+    IrohA-->>Alice: 生成票据 cardcraft://7b22...
+    Alice->>Bob: 微信/Discord 发送票据
+    Bob->>IrohB: cardcraft join cardcraft://7b22...
+    Note over IrohA,IrohB: 自动 NAT 打洞与 QUIC TLS 1.3 握手建立 P2P 直连
+    IrohB->>IrohA: 打开双向流 (open_bi)，发送 CAD/Chat 指令
+    IrohA->>Scheme: 触发 (net-on-message! 2 "s 1 2")
+    Scheme-->>IrohA: 生成状态演进与 (game-render)
+    IrohA->>IrohB: 回传执行反馈与游戏快照
+```
+
+### 2. CLI 快速使用指南
+
+* **作为房主启动 P2P 服务 (Host)**：
+  ```bash
+  cargo run -- host
+  # 或者
+  cardcraft --p2p-host
+  ```
+  终端将打印出专属直连票据：
+  ```text
+  === CardCraft Iroh P2P Host Starting ===
+  [P2P Host Ready!]
+  Share this ticket with your friend to connect without any central server or public IP:
+    cardcraft://7b226964223a22...
+  Waiting for peer connection...
+  ```
+
+* **作为客方加入好友对局 (Join)**：
+  ```bash
+  cargo run -- join cardcraft://7b226964223a22...
+  # 或者
+  cardcraft --p2p-join cardcraft://7b226964223a22...
+  ```
+  两端将通过 Iroh QUIC 直连握手，在同一张卡牌村庄中协同对战！
+
+---
+
+## 六、 总结与最佳实践
 
 1. **零外部锁竞争**：
    由于网络业务都在单线程 Scheme 内部求值，状态读写天然具备原子性，无需编写复杂的互斥锁（Mutex）死锁排查。
-2. **文本协议透明可读**：
+2. **传输层全协议可插拔**：
+   上层 Scheme 只与抽象 `client-id` 交互，底层无论是 Iroh P2P、WebSocket 还是 SSH，完全无缝切换。
+3. **文本协议透明可读**：
    所有通信报文为直观的字符串或 S-表达式，无论服务端开发还是抓包调试均一目了然。
-3. **极佳的热运维能力**：
-   在服务器生产运行期间，管理员可以通过控制台动态加载新配方或修改聊天过滤规则，无需停服即可热生效。
+4. **极佳的热运维能力**：
+   在服务器运行期间，管理员可以通过控制台动态加载新配方或修改聊天过滤规则，无需停服即可热生效。

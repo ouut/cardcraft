@@ -1,6 +1,8 @@
 use cardcraft::buffer::VirtualScreen;
 use cardcraft::cad::CommandState;
 use cardcraft::engine::{GameEngine, NetEvent};
+use cardcraft::p2p::{ticket_to_addr, P2pClient, P2pHost};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 #[test]
 fn test_initial_state() {
@@ -313,4 +315,66 @@ fn test_network_hooks_and_chat_and_whisper() {
     engine.net_disconnect(1).unwrap();
     let ev_dc = engine.drain_net_events();
     assert!(ev_dc.iter().any(|e| matches!(e, NetEvent::Broadcast { message } if message.contains("Alice disconnected"))));
+}
+
+#[tokio::test]
+async fn test_p2p_ticket_serialization_roundtrip() {
+    let host = P2pHost::bind().await.expect("Failed to bind P2P Host");
+    let ticket = &host.ticket;
+    assert!(ticket.starts_with("cardcraft://"));
+
+    let parsed_addr = ticket_to_addr(ticket).expect("Failed to parse ticket");
+    assert_eq!(host.addr.id, parsed_addr.id);
+}
+
+#[tokio::test]
+async fn test_iroh_p2p_connection_and_game_messaging() {
+    let host = P2pHost::bind().await.expect("Host bind failed");
+    let ticket = host.ticket.clone();
+
+    // Client task: P2pClient is Send + Sync, so it runs cleanly in tokio::spawn
+    let client_task = tokio::spawn(async move {
+        let client = P2pClient::new().await.expect("Client init failed");
+        let conn = client.connect_to_ticket(&ticket).await.expect("Client connect failed");
+        let (mut send_stream, recv_stream) = conn.open_bi().await.expect("open_bi failed");
+        
+        // Send CAD/Chat message
+        send_stream.write_all(b"say Hello P2P World\n").await.unwrap();
+        send_stream.flush().await.unwrap();
+
+        // Read Host reply
+        let mut reader = BufReader::new(recv_stream);
+        let mut reply = String::new();
+        reader.read_line(&mut reply).await.unwrap();
+        reply
+    });
+
+    // Host runs on the local thread with GameEngine
+    let mut engine = GameEngine::new().unwrap();
+    let incoming = host.endpoint.accept().await.expect("Expected connection");
+    let conn = incoming.await.expect("Host connection handshake failed");
+    
+    let (mut send_stream, recv_stream) = conn.accept_bi().await.expect("accept_bi failed");
+    let mut reader = BufReader::new(recv_stream);
+    let mut line = String::new();
+    
+    // Register peer as Client 2
+    engine.net_connect(2).unwrap();
+    
+    // Read command from P2P peer
+    reader.read_line(&mut line).await.expect("Read line failed");
+    let trimmed = line.trim();
+    assert_eq!(trimmed, "say Hello P2P World");
+    
+    // Execute in Scheme engine
+    engine.net_message(2, trimmed).unwrap();
+    let events = engine.drain_net_events();
+    
+    // Reply back to peer
+    let reply = format!("HOST_ACK: {}\n", events.len());
+    send_stream.write_all(reply.as_bytes()).await.unwrap();
+    send_stream.flush().await.unwrap();
+
+    let client_reply = client_task.await.unwrap();
+    assert!(client_reply.contains("HOST_ACK"));
 }

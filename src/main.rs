@@ -25,8 +25,83 @@ fn main() -> anyhow::Result<()> {
         return run_headless_demo();
     }
 
+    if args.iter().any(|arg| arg == "--p2p-host" || arg == "host") {
+        return run_p2p_host();
+    }
+
+    if let Some(pos) = args.iter().position(|arg| arg == "--p2p-join" || arg == "join") {
+        if let Some(ticket) = args.get(pos + 1) {
+            return run_p2p_join(ticket);
+        } else {
+            eprintln!("Usage: cardcraft --p2p-join <ticket>");
+            return Ok(());
+        }
+    }
+
     // Default: run interactive TUI
     run_interactive_tui()
+}
+
+fn run_p2p_host() -> anyhow::Result<()> {
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async {
+        println!("=== CardCraft Iroh P2P Host Starting ===");
+        let host = cardcraft::p2p::P2pHost::bind().await?;
+        println!("\n[P2P Host Ready!]");
+        println!("Endpoint ID: {}", host.addr.id);
+        println!("\nShare this ticket with your friend to connect without any central server or public IP:\n");
+        println!("  {}\n", host.ticket);
+        println!("Waiting for peer connection (press Ctrl+C to cancel)...");
+
+        let mut engine = GameEngine::new()?;
+        if let Some(incoming) = host.endpoint.accept().await {
+            let conn = incoming.await?;
+            println!("\n>>> Peer connected via Iroh QUIC!");
+            let (mut send_stream, recv_stream) = conn.accept_bi().await?;
+            engine.net_connect(2)?;
+
+            let mut reader = tokio::io::BufReader::new(recv_stream);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                let bytes_read = tokio::io::AsyncBufReadExt::read_line(&mut reader, &mut line).await?;
+                if bytes_read == 0 {
+                    println!("Peer disconnected.");
+                    break;
+                }
+                let trimmed = line.trim();
+                println!("[Peer CAD]: {}", trimmed);
+                let resp = engine.net_message(2, trimmed)?;
+
+                let reply = format!("{}\n", resp);
+                tokio::io::AsyncWriteExt::write_all(&mut send_stream, reply.as_bytes()).await?;
+                tokio::io::AsyncWriteExt::flush(&mut send_stream).await?;
+            }
+        }
+        Ok(())
+    })
+}
+
+fn run_p2p_join(ticket: &str) -> anyhow::Result<()> {
+    let rt = tokio::runtime::Runtime::new()?;
+    let ticket_str = ticket.to_string();
+    rt.block_on(async {
+        println!("=== Connecting to CardCraft Host via Iroh P2P ===");
+        let client = cardcraft::p2p::P2pClient::new().await?;
+        let conn = client.connect_to_ticket(&ticket_str).await?;
+        println!(">>> Connected successfully to P2P Host!");
+        let (mut send_stream, recv_stream) = conn.open_bi().await?;
+
+        // Send an initial handshake
+        tokio::io::AsyncWriteExt::write_all(&mut send_stream, b"say Joined P2P session!\n").await?;
+        tokio::io::AsyncWriteExt::flush(&mut send_stream).await?;
+
+        let mut reader = tokio::io::BufReader::new(recv_stream);
+        let mut line = String::new();
+        tokio::io::AsyncBufReadExt::read_line(&mut reader, &mut line).await?;
+        println!("Host response: {}", line.trim());
+        Ok(())
+    })
 }
 
 fn run_self_test() -> anyhow::Result<()> {
