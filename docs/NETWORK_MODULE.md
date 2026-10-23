@@ -38,12 +38,10 @@ flowchart TD
 
 网络模块由 **Rust 注入的底层网络原语**（统一归入 `system-*` 命名空间）和 **Scheme 业务钩子** 构成，满足分布式消息传递系统的完备性。
 
-### 1. Rust 注入给 Scheme 的系统网络原语
+### 1. Rust 注入给 Scheme 的系统网络原语 (极简流通道)
 | 接口函数 | 参数 | 返回值 | 语义与用途 |
 | :--- | :--- | :--- | :--- |
-| **`(system-net-send! client-id message)`** | `client-id: Integer`<br>`message: String` | `Boolean` | 向指定网络客户端单播发送文本消息（兼容：`net-send!`） |
-| **`(system-net-broadcast! message)`** | `message: String` | `Boolean` | 向全服所有当前在线的客户端广播文本（兼容：`net-broadcast!`） |
-| **`(system-net-whisper! from to message)`** | `from: Integer`<br>`to: Integer`<br>`message: String` | `Boolean` | 从 `from` 向 `to` 发送私聊消息（兼容：`net-whisper!`） |
+| **`(system-net-send! client-id message)`** | `client-id: Integer`<br>`message: String` | `Boolean` | 向指定网络客户端定向发送文本流（兼容：`net-send!`；全服广播与私聊均由 Scheme 遍历客户端列表自主分发） |
 | **`(system-net-disconnect! client-id)`** | `client-id: Integer` | `Boolean` | 强制切断指定客户端的网络连接（兼容：`net-disconnect!`） |
 | **`(system-time-now)`** | 无 | `Number` | 获取当前自 Unix 纪元起的秒级浮点时间戳（`f64`），用于计算延迟、冷却与超时 |
 

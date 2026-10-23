@@ -249,21 +249,7 @@ fn test_network_primitives() {
         NetEvent::Send { client_id: 100, message: "Legacy Send".to_string() }
     ]);
 
-    // 3. Test system-net-broadcast! (and legacy net-broadcast!)
-    engine.execute_command("(system-net-broadcast! \"Server rebooting\")").unwrap();
-    let events = engine.drain_net_events();
-    assert_eq!(events, vec![
-        NetEvent::Broadcast { message: "Server rebooting".to_string() }
-    ]);
-
-    // 4. Test system-net-whisper!
-    engine.execute_command("(system-net-whisper! 10 20 \"Secret message\")").unwrap();
-    let events = engine.drain_net_events();
-    assert_eq!(events, vec![
-        NetEvent::Whisper { from: 10, to: 20, message: "Secret message".to_string() }
-    ]);
-
-    // 5. Test system-net-disconnect! (and legacy net-disconnect!)
+    // 3. Test system-net-disconnect! (and legacy net-disconnect!)
     engine.execute_command("(system-net-disconnect! 100)").unwrap();
     let events = engine.drain_net_events();
     assert_eq!(events, vec![
@@ -279,29 +265,28 @@ fn test_network_hooks_and_chat_and_whisper() {
     engine.net_connect(1).unwrap();
     let ev1 = engine.drain_net_events();
     assert!(ev1.iter().any(|e| matches!(e, NetEvent::Send { client_id: 1, message } if message.contains("Welcome"))));
-    assert!(ev1.iter().any(|e| matches!(e, NetEvent::Broadcast { message } if message.contains("Player_1 connected"))));
+    assert!(ev1.iter().any(|e| matches!(e, NetEvent::Send { client_id: 1, message } if message.contains("Player_1 connected"))));
 
     // 2. Client 2 connects
     engine.net_connect(2).unwrap();
     let ev2 = engine.drain_net_events();
     assert!(ev2.iter().any(|e| matches!(e, NetEvent::Send { client_id: 2, message } if message.contains("Welcome"))));
-    assert!(ev2.iter().any(|e| matches!(e, NetEvent::Broadcast { message } if message.contains("Player_2 connected"))));
+    assert!(ev2.iter().any(|e| matches!(e, NetEvent::Send { client_id: 1, message } if message.contains("Player_2 connected"))));
 
     // 3. Client 1 and Client 2 set nicknames
     engine.net_message(1, "nick Alice").unwrap();
     let ev_nick1 = engine.drain_net_events();
-    assert!(ev_nick1.iter().any(|e| matches!(e, NetEvent::Broadcast { message } if message.contains("Alice"))));
+    assert!(ev_nick1.iter().any(|e| matches!(e, NetEvent::Send { client_id: 2, message } if message.contains("Alice"))));
 
     engine.net_message(2, "nick Bob").unwrap();
     let ev_nick2 = engine.drain_net_events();
-    assert!(ev_nick2.iter().any(|e| matches!(e, NetEvent::Broadcast { message } if message.contains("Bob"))));
+    assert!(ev_nick2.iter().any(|e| matches!(e, NetEvent::Send { client_id: 1, message } if message.contains("Bob"))));
 
-    // 4. Client 1 speaks in public chat
+    // 4. Client 1 speaks in public chat (broadcast implemented in Scheme via per-client send)
     engine.net_message(1, "say Good morning villagers!").unwrap();
     let ev_chat = engine.drain_net_events();
-    assert_eq!(ev_chat, vec![
-        NetEvent::Broadcast { message: "[Alice]: Good morning villagers!".to_string() }
-    ]);
+    assert!(ev_chat.iter().any(|e| matches!(e, NetEvent::Send { client_id: 2, message } if message == "[Alice]: Good morning villagers!")));
+    assert!(ev_chat.iter().any(|e| matches!(e, NetEvent::Send { client_id: 1, message } if message == "[Alice]: Good morning villagers!")));
 
     // 5. Client 1 sends private message (whisper) to Bob
     engine.net_message(1, "w Bob Secret trade offer").unwrap();
@@ -330,7 +315,7 @@ fn test_network_hooks_and_chat_and_whisper() {
     // 8. Client 1 disconnects
     engine.net_disconnect(1).unwrap();
     let ev_dc = engine.drain_net_events();
-    assert!(ev_dc.iter().any(|e| matches!(e, NetEvent::Broadcast { message } if message.contains("Alice disconnected"))));
+    assert!(ev_dc.iter().any(|e| matches!(e, NetEvent::Send { client_id: 2, message } if message.contains("Alice disconnected"))));
 }
 
 #[tokio::test]

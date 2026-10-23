@@ -95,7 +95,7 @@ pub fn spawn_p2p_client_actor(
                                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
                                     if val.get("type").and_then(|v| v.as_str()) == Some("event") {
                                         if let Some(msg) = val.get("message").and_then(|v| v.as_str()) {
-                                            hub_client.broadcast(msg);
+                                            hub_client.send_all(msg);
                                         }
                                         continue;
                                     }
@@ -136,7 +136,7 @@ pub fn spawn_p2p_client_actor(
                                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
                                     if val.get("type").and_then(|v| v.as_str()) == Some("event") {
                                         if let Some(msg) = val.get("message").and_then(|v| v.as_str()) {
-                                            hub_client.broadcast(msg);
+                                            hub_client.send_all(msg);
                                         }
                                         continue;
                                     }

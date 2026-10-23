@@ -719,11 +719,14 @@
                    cl))
              *net-clients*)))
 
+(define (broadcast! msg)
+  (for-each (lambda (c) (system-net-send! (car c) msg)) *net-clients*))
+
 (define (net-on-connect! cid)
   (let ([default-name (string-append "Player_" (number->string cid))])
     (set! *net-clients* (cons (list cid default-name) *net-clients*))
     (system-net-send! cid (string-append "=== Welcome to CardCraft! You are " default-name " ==="))
-    (system-net-broadcast! (string-append ">>> " default-name " connected to the server."))
+    (broadcast! (string-append ">>> " default-name " connected to the server."))
     (add-log! (string-append "Player #" (number->string cid) " connected."))
     "OK"))
 
@@ -737,7 +740,7 @@
                     [(null? cs) '()]
                     [(= (car (car cs)) cid) (cdr cs)]
                     [else (cons (car cs) (loop (cdr cs)))])))
-          (system-net-broadcast! (string-append "<<< " name " disconnected from the server."))
+          (broadcast! (string-append "<<< " name " disconnected from the server."))
           "OK")
         "OK")))
 
@@ -763,7 +766,7 @@
                          "Name taken")
                        (begin
                          (update-net-client-name! cid new-name)
-                         (system-net-broadcast! (string-append "*** " name " is now known as " new-name "."))
+                         (broadcast! (string-append "*** " name " is now known as " new-name "."))
                          "OK"))))]
 
             ;; 2. Public Chat
@@ -773,7 +776,7 @@
                    (system-net-send! cid "Usage: say <message...>")
                    "Usage: say <message...>")
                  (let ([chat-text (join-strings args " ")])
-                   (system-net-broadcast! (string-append "[" name "]: " chat-text))
+                   (broadcast! (string-append "[" name "]: " chat-text))
                    (add-log! (string-append "[" name "]: " chat-text))
                    "OK"))]
 

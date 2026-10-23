@@ -19,7 +19,7 @@ pub fn get_next_client_id() -> isize {
 
 pub type ClientSender = mpsc::UnboundedSender<String>;
 
-/// Multi-client network hub routing events (broadcast, send, whisper)
+/// Connection router forwarding raw string streams per client_id
 #[derive(Clone, Default)]
 pub struct ClientHub {
     clients: Arc<Mutex<HashMap<isize, ClientSender>>>,
@@ -40,13 +40,6 @@ impl ClientHub {
         self.clients.lock().unwrap().remove(&client_id);
     }
 
-    pub fn broadcast(&self, msg: &str) {
-        let clients = self.clients.lock().unwrap();
-        for tx in clients.values() {
-            let _ = tx.send(msg.to_string());
-        }
-    }
-
     pub fn send_to(&self, client_id: isize, msg: &str) {
         let clients = self.clients.lock().unwrap();
         if let Some(tx) = clients.get(&client_id) {
@@ -54,17 +47,18 @@ impl ClientHub {
         }
     }
 
+    pub fn send_all(&self, msg: &str) {
+        let clients = self.clients.lock().unwrap();
+        for tx in clients.values() {
+            let _ = tx.send(msg.to_string());
+        }
+    }
+
     pub fn dispatch_events(&self, events: Vec<NetEvent>) {
         for ev in events {
             match ev {
-                NetEvent::Broadcast { message } => {
-                    self.broadcast(&message);
-                }
                 NetEvent::Send { client_id, message } => {
                     self.send_to(client_id, &message);
-                }
-                NetEvent::Whisper { from: _, to, message } => {
-                    self.send_to(to, &message);
                 }
                 NetEvent::Disconnect { client_id } => {
                     self.unregister(client_id);

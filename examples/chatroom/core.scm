@@ -141,8 +141,12 @@
     (dispatch-chat! cid (join-strings tokens " "))))
 
 ;;; =============================================================================
-;;; 网络事件处理与业务路由 (3 大网络钩子)
+;;; 网络事件处理与业务路由 (纯 Scheme 路由与广播分发)
 ;;; =============================================================================
+
+;; 纯 Scheme 实现全员广播：向当前所有在线客户端分别执行纯网络下发
+(define (broadcast! msg)
+  (for-each (lambda (c) (system-net-send! (car c) msg)) *net-clients*))
 
 ;; 钩子 1: 新客户端连入
 (define (net-on-connect! cid)
@@ -152,7 +156,7 @@
         (set! *net-clients* (append *net-clients* (list (list cid def-name))))
         (when (> cid 0)
           (let ([join-msg (string-append ANSI-CYAN "*** " def-name " joined the chatroom ***" ANSI-RESET)])
-            (system-net-broadcast! join-msg)
+            (broadcast! join-msg)
             (add-message! join-msg))
           (system-net-send! cid (string-append ANSI-GREEN "=== Welcome to CardCraft Chatroom, " def-name "! ===" ANSI-RESET))
           (system-net-send! cid (string-append ANSI-GRAY "Commands: /nick <name>, /w <user> <msg>, /who, /help" ANSI-RESET)))
@@ -164,7 +168,7 @@
     (remove-client! cid)
     (when (> cid 0)
       (let ([leave-msg (string-append ANSI-GRAY "*** " name " left the chatroom ***" ANSI-RESET)])
-        (system-net-broadcast! leave-msg)
+        (broadcast! leave-msg)
         (add-message! leave-msg)))
     "OK"))
 
@@ -233,7 +237,7 @@
                        (begin
                          (update-client-name! cid new-name)
                          (let ([notice (string-append ANSI-CYAN "*** " sender " is now known as " new-name " ***" ANSI-RESET)])
-                           (system-net-broadcast! notice)
+                           (broadcast! notice)
                            (add-message! notice))
                          "OK"))))]
 
@@ -290,7 +294,7 @@
             ;; 6. 默认公共公屏聊天 (带 ANSI 彩色高亮昵称)
             [else
              (let ([pub-msg (string-append ANSI-YELLOW "<" sender "> " ANSI-RESET text)])
-               (system-net-broadcast! pub-msg)
+               (broadcast! pub-msg)
                (add-message! pub-msg)
                "OK")])))))
 

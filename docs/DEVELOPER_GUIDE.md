@@ -25,8 +25,6 @@ CardCraft 采用双向互操作设计：
 │   │ • (system-file-write path content)                  │   │
 │   │ • (system-file-read path)                           │   │
 │   │ • (system-net-send! cid msg)                        │   │
-│   │ • (system-net-broadcast! msg)                       │   │
-│   │ • (system-net-whisper! from to msg)                 │   │
 │   │ • (system-net-disconnect! cid)                      │   │
 │   └─────────────────────────────────────────────────────┘   │
 │         │                                                   │
@@ -150,10 +148,8 @@ CardCraft 采用双向互操作设计：
 
 CardCraft 将所有网络与多人业务（聊天、私聊、房间、匹配、游戏指令路由）下放至 Scheme，Rust 宿主仅负责高并发套接字搬运：
 
-#### (1) Rust 注入的网络通信原语
-* **`(system-net-send! client-id message)`**：向指定的已连接客户端单播消息。（兼容：`net-send!`）
-* **`(system-net-broadcast! message)`**：向当前在线的所有客户端广播消息。（兼容：`net-broadcast!`）
-* **`(system-net-whisper! from to message)`**：向指定目标客户端发送私聊密语。（兼容：`net-whisper!`）
+#### (1) Rust 注入的网络通信原语 (极简流转发管道)
+* **`(system-net-send! client-id message)`**：向指定的已连接客户端单播下发文本流。（兼容：`net-send!`，广播与私聊等业务由 Scheme 列表遍历自主实现）
 * **`(system-net-disconnect! client-id)`**：强制断开指定客户端连接。（兼容：`net-disconnect!`）
 * **`(system-time-now)`**：获取当前系统自 Unix 纪元起的高精度浮点秒数（`f64`），便于 Scheme 内置超时或计时器判定。
 

@@ -10,8 +10,6 @@ const CORE_SCRIPT: &str = include_str!("../scripts/core.scm");
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetEvent {
     Send { client_id: isize, message: String },
-    Broadcast { message: String },
-    Whisper { from: isize, to: isize, message: String },
     Disconnect { client_id: isize },
 }
 
@@ -135,7 +133,7 @@ impl GameEngine {
         });
 
         // =========================================================================
-        // System Network Primitives
+        // System Network Primitives (Minimalist Raw Stream Pipe)
         // =========================================================================
         let outbox_send = Arc::clone(&outbox);
         vm.register_fn("system-net-send!", move |client_id: isize, msg: String| -> bool {
@@ -145,28 +143,6 @@ impl GameEngine {
         let outbox_legacy_send = Arc::clone(&outbox);
         vm.register_fn("net-send!", move |client_id: isize, msg: String| -> bool {
             outbox_legacy_send.lock().unwrap().push(NetEvent::Send { client_id, message: msg });
-            true
-        });
-
-        let outbox_bc = Arc::clone(&outbox);
-        vm.register_fn("system-net-broadcast!", move |msg: String| -> bool {
-            outbox_bc.lock().unwrap().push(NetEvent::Broadcast { message: msg });
-            true
-        });
-        let outbox_legacy_bc = Arc::clone(&outbox);
-        vm.register_fn("net-broadcast!", move |msg: String| -> bool {
-            outbox_legacy_bc.lock().unwrap().push(NetEvent::Broadcast { message: msg });
-            true
-        });
-
-        let outbox_wh = Arc::clone(&outbox);
-        vm.register_fn("system-net-whisper!", move |from: isize, to: isize, msg: String| -> bool {
-            outbox_wh.lock().unwrap().push(NetEvent::Whisper { from, to, message: msg });
-            true
-        });
-        let outbox_legacy_wh = Arc::clone(&outbox);
-        vm.register_fn("net-whisper!", move |from: isize, to: isize, msg: String| -> bool {
-            outbox_legacy_wh.lock().unwrap().push(NetEvent::Whisper { from, to, message: msg });
             true
         });
 

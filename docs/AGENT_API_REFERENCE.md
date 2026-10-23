@@ -78,9 +78,7 @@ CardCraft 采用**“窄腰沙漏（Narrow-Waist）”双核解耦架构**：
 | `(system-time-now)` | 无 | `Number` | 获取当前自 Unix 纪元起的高精度浮点秒数 (`f64`)，已合并原 `rust-millis`，用于高精度耗时与冷却判定。 |
 | `(system-file-write path content)` | `String, String` | `Boolean` | 将字符串写入 `<game_dir>/saves/<path>`。成功返回 `#true`，越界防护返回 `#false`。 |
 | `(system-file-read path)` | `String` | `String` | 从 `<game_dir>/saves/<path>` 读取文本内容。文件不存在或失败时返回 `""`。 |
-| `(system-net-send! cid message)` | `Integer, String` | `Boolean` | 向指定 `client-id` 的已连接客户端单播文本消息。（兼容别名：`net-send!`） |
-| `(system-net-broadcast! message)` | `String` | `Boolean` | 向所有当前在线的网络客户端广播文本消息。（兼容别名：`net-broadcast!`） |
-| `(system-net-whisper! from to message)` | `Integer, Integer, String` | `Boolean` | 从 `from-cid` 向 `to-cid` 派发私聊密语事件。（兼容别名：`net-whisper!`） |
+| `(system-net-send! cid message)` | `Integer, String` | `Boolean` | 向指定 `client-id` 的已连接客户端下发文本流（流派 B：纯抽象管道，业务广播或私聊由 Scheme 自由组合循环发送）。（兼容别名：`net-send!`） |
 | `(system-net-disconnect! cid)` | `Integer` | `Boolean` | 强制切断指定 `client-id` 的客户端网络连接。（兼容别名：`net-disconnect!`） |
 
 ---
@@ -124,10 +122,16 @@ CardCraft 采用**“窄腰沙漏（Narrow-Waist）”双核解耦架构**：
 
 ```scheme
 ;; 1. 当新客户端连入时触发
+;; 纯 Scheme 实现全员广播
+(define (broadcast! msg)
+  (for-each (lambda (c) (system-net-send! (car c) msg)) *net-clients*))
+
+;; 1. 当新客户端接入时触发
 (define (net-on-connect! cid)
   (let ([name (string-append "Player_" (number->string cid))])
+    (set! *net-clients* (cons (list cid name) *net-clients*))
     (system-net-send! cid (string-append "Welcome! You are " name))
-    (system-net-broadcast! (string-append name " joined."))
+    (broadcast! (string-append name " joined."))
     "OK"))
 
 ;; 2. 当客户端提交任意非空文本时触发
@@ -135,7 +139,7 @@ CardCraft 采用**“窄腰沙漏（Narrow-Waist）”双核解耦架构**：
   (let ([tokens (split-spaces msg-str)])
     (cond
       [(equal? (car tokens) "say") 
-       (system-net-broadcast! (string-append "Player_" (number->string cid) ": " msg-str))
+       (broadcast! (string-append "Player_" (number->string cid) ": " msg-str))
        "OK"]
       [else 
        ;; 转发给游戏 CAD 输入处理
@@ -143,7 +147,7 @@ CardCraft 采用**“窄腰沙漏（Narrow-Waist）”双核解耦架构**：
 
 ;; 3. 当客户端断开连接时触发
 (define (net-on-disconnect! cid)
-  (system-net-broadcast! (string-append "Player_" (number->string cid) " disconnected."))
+  (broadcast! (string-append "Player_" (number->string cid) " disconnected."))
   "OK")
 ```
 
