@@ -16,7 +16,7 @@ flowchart TD
         EngineVM["Steel Scheme 虚拟机实例"]
         
         SocketPool -->|"接收网络包"| EngineVM
-        EngineVM -->|"注入原语 (net-send! / net-broadcast!)"| OutboxQueue
+        EngineVM -->|"注入原语 (system-net-send! / system-net-broadcast!)"| OutboxQueue
         OutboxQueue -->|"下发网络包"| SocketPool
     end
 
@@ -34,16 +34,17 @@ flowchart TD
 
 ---
 
-## 二、 底层 7 大通信接口定义
+## 二、 底层通信接口定义
 
-网络模块仅由 **4 个 Rust 原语** 和 **3 个 Scheme 钩子** 构成，满足分布式消息传递系统的完备性。
+网络模块由 **Rust 注入的底层网络原语**（统一归入 `system-*` 命名空间）和 **Scheme 业务钩子** 构成，满足分布式消息传递系统的完备性。
 
-### 1. Rust 注入给 Scheme 的 4 大底层原语
+### 1. Rust 注入给 Scheme 的系统网络原语
 | 接口函数 | 参数 | 返回值 | 语义与用途 |
 | :--- | :--- | :--- | :--- |
-| **`(net-send! client-id message)`** | `client-id: Integer`<br>`message: String` | `Boolean` | 向指定网络客户端单播发送文本消息 |
-| **`(net-broadcast! message)`** | `message: String` | `Boolean` | 向全服所有当前在线的客户端广播文本 |
-| **`(net-disconnect! client-id)`** | `client-id: Integer` | `Boolean` | 强制切断指定客户端的网络连接 |
+| **`(system-net-send! client-id message)`** | `client-id: Integer`<br>`message: String` | `Boolean` | 向指定网络客户端单播发送文本消息（兼容：`net-send!`） |
+| **`(system-net-broadcast! message)`** | `message: String` | `Boolean` | 向全服所有当前在线的客户端广播文本（兼容：`net-broadcast!`） |
+| **`(system-net-whisper! from to message)`** | `from: Integer`<br>`to: Integer`<br>`message: String` | `Boolean` | 从 `from` 向 `to` 发送私聊消息（兼容：`net-whisper!`） |
+| **`(system-net-disconnect! client-id)`** | `client-id: Integer` | `Boolean` | 强制切断指定客户端的网络连接（兼容：`net-disconnect!`） |
 | **`(system-time-now)`** | 无 | `Number` | 获取当前自 Unix 纪元起的秒级浮点时间戳（`f64`），用于计算延迟、冷却与超时 |
 
 ### 2. Scheme 响应网络事件的 3 大钩子
@@ -84,7 +85,7 @@ flowchart TD
   ;; 公共聊天
   [(equal? verb "say")
    (let ([chat-text (join-strings args " ")])
-     (net-broadcast! (string-append "[" sender-name "]: " chat-text))
+     (system-net-broadcast! (string-append "[" sender-name "]: " chat-text))
      "OK")]
 
   ;; 私聊密语 (Whisper)
@@ -94,13 +95,13 @@ flowchart TD
           [target (find-client-by-name target-name)])
      (if (not target)
          (begin
-           (net-send! cid (string-append "Error: User '" target-name "' not found."))
+           (system-net-send! cid (string-append "Error: User '" target-name "' not found."))
            "User not found")
          (let ([target-cid (car target)])
            ;; 单播发给对方
-           (net-send! target-cid (string-append "[Private from " sender-name "]: " chat-text))
+           (system-net-send! target-cid (string-append "[Private from " sender-name "]: " chat-text))
            ;; 回显给自己
-           (net-send! cid (string-append "[Private to " target-name "]: " chat-text))
+           (system-net-send! cid (string-append "[Private to " target-name "]: " chat-text))
            "OK")))])
 ```
 
@@ -121,13 +122,13 @@ flowchart TD
 (define (handle-reconnect! cid token)
   (let ([session (assoc token *user-sessions*)])
     (if (not session)
-        (net-send! cid "Error: Invalid session token.")
+        (system-net-send! cid "Error: Invalid session token.")
         (let ([username (cadr session)])
           ;; 更新该会话对应的当前物理 client-id
           (update-net-client-name! cid username)
-          (net-send! cid (string-append "Welcome back, " username "! Restoring state..."))
+          (system-net-send! cid (string-append "Welcome back, " username "! Restoring state..."))
           ;; 将当前村庄游戏全景快照精准单播推回给重连者
-          (net-send! cid (game-render))
+          (system-net-send! cid (game-render))
           "RECONNECTED"))))
 ```
 
@@ -151,21 +152,21 @@ flowchart TD
   (let ([r (assoc room-id *rooms*)])
     (when r
       (let ([members (list-ref r 3)])
-        (for-each (lambda (cid) (net-send! cid message)) members)))))
+        (for-each (lambda (cid) (system-net-send! cid message)) members)))))
 
 ;; 创建房间
 (define (create-room! owner-cid name)
   (let ([rid *next-room-id*])
     (set! *next-room-id* (+ *next-room-id* 1))
     (set! *rooms* (cons (list rid name owner-cid (list owner-cid) "WAITING") *rooms*))
-    (net-send! owner-cid (string-append "Room " (number->string rid) " created!"))
+    (system-net-send! owner-cid (string-append "Room " (number->string rid) " created!"))
     rid))
 
 ;; 加入房间
 (define (join-room! cid room-id)
   (let ([r (assoc room-id *rooms*)])
     (if (not r)
-        (net-send! cid "Room not found.")
+        (system-net-send! cid "Room not found.")
         (let* ([old-members (list-ref r 3)]
                [new-members (cons cid old-members)])
           (set! *rooms*
@@ -193,10 +194,10 @@ flowchart TD
 
 (define (enqueue-matchmaker! cid)
   (if (member cid *match-queue*)
-      (net-send! cid "Already in matchmaking queue.")
+      (system-net-send! cid "Already in matchmaking queue.")
       (begin
         (set! *match-queue* (append *match-queue* (list cid)))
-        (net-send! cid "Searching for opponent...")
+        (system-net-send! cid "Searching for opponent...")
         (check-and-start-match!))))
 
 (define (check-and-start-match!)
@@ -208,8 +209,8 @@ flowchart TD
       ;; 创建 1v1 对战实例
       (let ([rid (create-room! p1 "1v1 Ranked Match")])
         (join-room! p2 rid)
-        (net-send! p1 "Match found! You are Player 1 (Red).")
-        (net-send! p2 "Match found! You are Player 2 (Blue).")
+        (system-net-send! p1 "Match found! You are Player 1 (Red).")
+        (system-net-send! p2 "Match found! You are Player 2 (Blue).")
         ;; 触发初始卡牌发放
         (room-broadcast! rid "Game started! Place your first villager.")))))
 ```
@@ -232,7 +233,7 @@ flowchart TD
 (define (market-list! cid slot-id price)
   (let ([stack (find-stack slot-id)])
     (if (not stack)
-        (net-send! cid "Invalid slot.")
+        (system-net-send! cid "Invalid slot.")
         (let* ([cards (stack-cards stack)]
                [card-name (car cards)])
           ;; 扣除本地卡槽卡牌
@@ -240,22 +241,22 @@ flowchart TD
           (let ([oid *next-order-id*])
             (set! *next-order-id* (+ *next-order-id* 1))
             (set! *market-orders* (cons (list oid cid card-name price "OPEN") *market-orders*))
-            (net-broadcast! (string-append "[Market] " card-name " listed for " (number->string price) "G by Player " (number->string cid)))
+            (system-net-broadcast! (string-append "[Market] " card-name " listed for " (number->string price) "G by Player " (number->string cid)))
             "OK")))))
 
 ;; 购买挂单
 (define (market-buy! buyer-cid order-id)
   (let ([order (assoc order-id *market-orders*)])
     (cond
-      [(not order) (net-send! buyer-cid "Order does not exist.")]
-      [(not (equal? (list-ref order 4) "OPEN")) (net-send! buyer-cid "Order already sold.")]
+      [(not order) (system-net-send! buyer-cid "Order does not exist.")]
+      [(not (equal? (list-ref order 4) "OPEN")) (system-net-send! buyer-cid "Order already sold.")]
       [else
        (let ([seller-cid (cadr order)]
              [card-name  (caddr order)]
              [price      (cadddr order)])
          ;; 校验买家金币，原子结算
          (if (< *world-gold* price)
-             (net-send! buyer-cid "Insufficient gold!")
+             (system-net-send! buyer-cid "Insufficient gold!")
              (begin
                (set! *world-gold* (- *world-gold* price))
                ;; 生成卡牌入买家槽位
@@ -263,8 +264,8 @@ flowchart TD
                ;; 标记订单售出
                (set-order-status! order-id "SOLD")
                ;; 通知双方
-               (net-send! seller-cid (string-append "Your " card-name " was sold! Received " (number->string price) "G."))
-               (net-send! buyer-cid (string-append "Successfully purchased " card-name "!"))
+               (system-net-send! seller-cid (string-append "Your " card-name " was sold! Received " (number->string price) "G."))
+               (system-net-send! buyer-cid (string-append "Successfully purchased " card-name "!"))
                "OK")))])))
 ```
 
@@ -273,7 +274,7 @@ flowchart TD
 ### 场景 6：心跳保活、滑动窗口防刷屏与作弊踢出 (Rate Limiting & Anti-Cheat)
 
 #### 1. 业务需求
-* 防止恶意客户端 DDOS 轰炸指令：每秒限制发送最多 5 条消息，超额警告，多次违规自动 `(net-disconnect!)`。
+* 防止恶意客户端 DDOS 轰炸指令：每秒限制发送最多 5 条消息，超额警告，多次违规自动 `(system-net-disconnect!)`。
 * 超过 10 分钟无输入的挂机玩家自动清理断连。
 
 #### 2. Scheme 实现方法
@@ -296,11 +297,11 @@ flowchart TD
               (if (> count 5)
                   (if (>= warnings 3)
                       (begin
-                        (net-send! cid "Kicked for spamming.")
-                        (net-disconnect! cid)
+                        (system-net-send! cid "Kicked for spamming.")
+                        (system-net-disconnect! cid)
                         #f)
                       (begin
-                        (net-send! cid "Warning: You are typing too fast!")
+                        (system-net-send! cid "Warning: You are typing too fast!")
                         ;; 警告次数增加
                         (update-rate-record! cid last-time (+ count 1) (+ warnings 1))
                         #f))

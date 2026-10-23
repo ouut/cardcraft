@@ -17,12 +17,16 @@ CardCraft 采用双向互操作设计：
 │         │ 1. 注册宿主能力 (vm.register_fn)                   │
 │         ▼                                                   │
 │   ┌─────────────────────────────────────────────────────┐   │
-│   │ 暴露的 Rust 原语：                                   │   │
-│   │ • (rust-log level msg)                              │   │
-│   │ • (rust-random-int min max)                         │   │
-│   │ • (rust-millis)                                     │   │
+│   │ 暴露的系统原语体系 (System Primitives)：            │   │
+│   │ • (system-log level msg)                            │   │
+│   │ • (system-utils-random-int min max)                 │   │
+│   │ • (system-time-now)                                 │   │
 │   │ • (system-file-write path content)                  │   │
 │   │ • (system-file-read path)                           │   │
+│   │ • (system-net-send! cid msg)                        │   │
+│   │ • (system-net-broadcast! msg)                       │   │
+│   │ • (system-net-whisper! from to msg)                 │   │
+│   │ • (system-net-disconnect! cid)                      │   │
 │   └─────────────────────────────────────────────────────┘   │
 │         │                                                   │
 │         │ 2. 注入并执行 core.scm                             │
@@ -48,8 +52,8 @@ CardCraft 采用双向互操作设计：
 
 在 `src/engine.rs` 中，Rust 引擎向 Scheme 空间直接注入了以下标准宿主函数：
 
-### 1. 高熵随机数生成器：`(rust-random-int min max)`
-* **说明**：基于 Rust `rand` 库的高性能随机数，闭区间 `[min, max]`。
+### 1. 高熵随机数生成器：`(system-utils-random-int min max)`
+* **说明**：基于 Rust `rand` 库的高性能硬件随机数，闭区间 `[min, max]`。（兼容别名：`rust-random-int`）
 * **参数**：
   * `min` (Integer): 最小值（例如 `0`）。
   * `max` (Integer): 最大值（例如 `4`）。
@@ -61,7 +65,7 @@ CardCraft 采用双向互操作设计：
     (if (null? lst)
         #f
         (let* ([len (length lst)]
-               [idx (rust-random-int 0 (- len 1))])
+               [idx (system-utils-random-int 0 (- len 1))])
           (list-ref lst idx))))
 
   ;; 开启基础卡包时随机掉落
@@ -72,29 +76,29 @@ CardCraft 采用双向互操作设计：
 
 ---
 
-### 2. 高精度时间戳：`(rust-millis)`
-* **说明**：获取当前系统自 Unix 纪元起的毫秒级时间戳。
+### 2. 高精度时间戳与判定：`(system-time-now)`
+* **说明**：获取当前系统自 Unix 纪元起的秒级浮点时间戳（`f64`，高精度微秒级）。已合并废弃原毫秒级的 `(rust-millis)`。
 * **参数**：无。
-* **返回值**：`(Integer)` 当前毫秒数（`i64`）。
+* **返回值**：`(Number)` 当前秒数（`f64`，例如 `1729697210.1234`）。
 * **示例**：
   ```scheme
-  (let ([start (rust-millis)])
+  (let ([start (system-time-now)])
     ;; 执行某项大列表计算...
-    (let ([cost (- (rust-millis) start)])
-      (rust-log "INFO" (string-append "Calculation took " (number->string cost) "ms"))))
+    (let ([cost (- (system-time-now) start)])
+      (system-log "INFO" (string-append "Calculation took " (number->string cost) "s"))))
   ```
 
 ---
 
-### 3. 系统日志输出：`(rust-log level msg)`
-* **说明**：向宿主标准错误（stderr）或后台日志管道打印格式化日志。
+### 3. 系统日志输出：`(system-log level msg)`
+* **说明**：向宿主标准错误（stderr）或后台日志管道打印格式化日志。（兼容别名：`rust-log`）
 * **参数**：
   * `level` (String): 日志级别，如 `"DEBUG"`、`"INFO"`、`"WARN"`、`"ERROR"`。
   * `msg` (String): 日志正文。
 * **返回值**：`#<void>`。
 * **示例**：
   ```scheme
-  (rust-log "WARN" "Villager is starving!")
+  (system-log "WARN" "Villager is starving!")
   ```
 
 ---
@@ -127,14 +131,15 @@ CardCraft 采用双向互操作设计：
 
 ---
 
-### 6. 网络通信 4 大原语与 3 大事件钩子 (The 7 Network Primitives & Hooks)
+### 6. 网络通信原语与 3 大事件钩子 (The Network Primitives & Hooks)
 
 CardCraft 将所有网络与多人业务（聊天、私聊、房间、匹配、游戏指令路由）下放至 Scheme，Rust 宿主仅负责高并发套接字搬运：
 
-#### (1) Rust 注入的 4 大网络原语
-* **`(net-send! client-id message)`**：向指定的已连接客户端单播消息。
-* **`(net-broadcast! message)`**：向当前在线的所有客户端广播消息。
-* **`(net-disconnect! client-id)`**：强制断开指定客户端连接。
+#### (1) Rust 注入的网络通信原语
+* **`(system-net-send! client-id message)`**：向指定的已连接客户端单播消息。（兼容：`net-send!`）
+* **`(system-net-broadcast! message)`**：向当前在线的所有客户端广播消息。（兼容：`net-broadcast!`）
+* **`(system-net-whisper! from to message)`**：向指定目标客户端发送私聊密语。（兼容：`net-whisper!`）
+* **`(system-net-disconnect! client-id)`**：强制断开指定客户端连接。（兼容：`net-disconnect!`）
 * **`(system-time-now)`**：获取当前系统自 Unix 纪元起的高精度浮点秒数（`f64`），便于 Scheme 内置超时或计时器判定。
 
 #### (2) Scheme 响应的 3 大事件钩子
@@ -249,8 +254,8 @@ if let Some(steel::rvals::SteelVal::StringV(json_str)) = res.last() {
 ### 1. 利用终端自带的 Lisp God Mode 实时联调
 在运行游戏时（`cargo run`），底部的命令行除了支持 `s 1 2` 这类 CAD 简写指令外，**支持输入任意 Scheme 表达式**：
 
-* 输入 `(rust-random-int 1 100)`：立即看到随机数返回。
-* 输入 `(rust-log "TEST" "debugging something")`：观察 stderr 输出。
+* 输入 `(system-utils-random-int 1 100)`：立即看到随机数返回。
+* 输入 `(system-log "TEST" "debugging something")`：观察 stderr 输出。
 * 输入 `(spawn-card! "Apple")`：实时向当前场上注入卡牌。
 
 ### 2. 编写无头单测（Headless Tests）
@@ -260,7 +265,7 @@ if let Some(steel::rvals::SteelVal::StringV(json_str)) = res.last() {
 #[test]
 fn test_my_custom_binding() {
     let mut engine = GameEngine::new().unwrap();
-    let res = engine.execute_command("(rust-random-int 1 10)").unwrap();
+    let res = engine.execute_command("(system-utils-random-int 1 10)").unwrap();
     let n: i64 = res.parse().unwrap();
     assert!(n >= 1 && n <= 10);
 }

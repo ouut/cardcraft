@@ -66,22 +66,21 @@ CardCraft 采用**“窄腰沙漏（Narrow-Waist）”双核解耦架构**：
 
 ---
 
-## 3. Rust 注入的宿主原语手册 (Host Primitives)
+## 3. Rust 注入的宿主系统原语手册 (System Host Primitives)
 
-在执行 Scheme 游戏脚本前，Rust 宿主会在全局环境中注册以下 10 个核心原语：
+在执行 Scheme 游戏脚本前，Rust 宿主在全局环境中注册了标准化的 `system-*` 核心原语体系（提供向后兼容别名）：
 
 | 原语名称 | 参数类型 | 返回值 | 语义说明与典型用法 |
 | :--- | :--- | :--- | :--- |
-| `(rust-log level msg)` | `String, String` | `#<void>` | 输出日志至终端标准错误。`level` 可为 `"INFO"`、`"WARN"`、`"ERROR"`。 |
-| `(rust-random-int min max)` | `Integer, Integer` | `Integer` | 生成闭区间 `[min, max]` 的随机整数（基于 Rust 硬件随机数生成器）。 |
-| `(rust-millis)` | 无 | `Integer` | 获取当前自 Unix 纪元起的毫秒时间戳 (`i64`)。 |
-| `(system-time-now)` | 无 | `Number` | 获取当前自 Unix 纪元起的高精度浮点秒数 (`f64`)。 |
-| `(system-file-write path content)` | `String, String` | `Boolean` | 将字符串写入 `<game_dir>/saves/<path>`。成功返回 `#true`，失败返回 `#false`。 |
+| `(system-log level msg)` | `String, String` | `#<void>` | 输出日志至终端标准错误。`level` 可为 `"INFO"`、`"WARN"`、`"ERROR"`。（兼容别名：`rust-log`） |
+| `(system-utils-random-int min max)` | `Integer, Integer` | `Integer` | 生成闭区间 `[min, max]` 的随机整数（基于硬件随机数发生器）。（兼容别名：`rust-random-int`） |
+| `(system-time-now)` | 无 | `Number` | 获取当前自 Unix 纪元起的高精度浮点秒数 (`f64`)，已合并原 `rust-millis`，用于高精度耗时与冷却判定。 |
+| `(system-file-write path content)` | `String, String` | `Boolean` | 将字符串写入 `<game_dir>/saves/<path>`。成功返回 `#true`，越界防护返回 `#false`。 |
 | `(system-file-read path)` | `String` | `String` | 从 `<game_dir>/saves/<path>` 读取文本内容。文件不存在或失败时返回 `""`。 |
-| `(net-send! cid message)` | `Integer, String` | `#<void>` | 向指定 `client-id` 的已连接网络客户端单播文本消息。 |
-| `(net-broadcast! message)` | `String` | `#<void>` | 向所有当前在线的网络客户端广播文本消息。 |
-| `(net-whisper! from to message)` | `Integer, Integer, String` | `#<void>` | 从 `from-cid` 向 `to-cid` 发送私聊消息。 |
-| `(net-disconnect! cid)` | `Integer` | `#<void>` | 强制断开指定 `client-id` 的客户端网络连接。 |
+| `(system-net-send! cid message)` | `Integer, String` | `Boolean` | 向指定 `client-id` 的已连接客户端单播文本消息。（兼容别名：`net-send!`） |
+| `(system-net-broadcast! message)` | `String` | `Boolean` | 向所有当前在线的网络客户端广播文本消息。（兼容别名：`net-broadcast!`） |
+| `(system-net-whisper! from to message)` | `Integer, Integer, String` | `Boolean` | 从 `from-cid` 向 `to-cid` 派发私聊密语事件。（兼容别名：`net-whisper!`） |
+| `(system-net-disconnect! cid)` | `Integer` | `Boolean` | 强制切断指定 `client-id` 的客户端网络连接。（兼容别名：`net-disconnect!`） |
 
 ---
 
@@ -126,8 +125,8 @@ CardCraft 采用**“窄腰沙漏（Narrow-Waist）”双核解耦架构**：
 ;; 1. 当新客户端连入时触发
 (define (net-on-connect! cid)
   (let ([name (string-append "Player_" (number->string cid))])
-    (net-send! cid (string-append "Welcome! You are " name))
-    (net-broadcast! (string-append name " joined."))
+    (system-net-send! cid (string-append "Welcome! You are " name))
+    (system-net-broadcast! (string-append name " joined."))
     "OK"))
 
 ;; 2. 当客户端提交任意非空文本时触发
@@ -135,7 +134,7 @@ CardCraft 采用**“窄腰沙漏（Narrow-Waist）”双核解耦架构**：
   (let ([tokens (split-spaces msg-str)])
     (cond
       [(equal? (car tokens) "say") 
-       (net-broadcast! (string-append "Player_" (number->string cid) ": " msg-str))
+       (system-net-broadcast! (string-append "Player_" (number->string cid) ": " msg-str))
        "OK"]
       [else 
        ;; 转发给游戏 CAD 输入处理
@@ -143,7 +142,7 @@ CardCraft 采用**“窄腰沙漏（Narrow-Waist）”双核解耦架构**：
 
 ;; 3. 当客户端断开连接时触发
 (define (net-on-disconnect! cid)
-  (net-broadcast! (string-append "Player_" (number->string cid) " disconnected."))
+  (system-net-broadcast! (string-append "Player_" (number->string cid) " disconnected."))
   "OK")
 ```
 
@@ -324,7 +323,7 @@ CardCraft 采用**“窄腰沙漏（Narrow-Waist）”双核解耦架构**：
 
 ;; 5. 网络连接钩子
 (define (net-on-connect! cid)
-  (net-send! cid "Welcome to Minimal RPG!")
+  (system-net-send! cid "Welcome to Minimal RPG!")
   "OK")
 
 (define (net-on-message! cid msg)
@@ -363,4 +362,4 @@ cargo run -- -g ./games/my_game --ws 8080 --headless
 ```bash
 cargo test
 ```
-确保新增的 Scheme 代码未破坏宿主引擎的 19 项单元与集成测试。
+确保新增的 Scheme 代码未破坏宿主引擎的 20 项单元与集成测试。

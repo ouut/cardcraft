@@ -11,6 +11,7 @@ const CORE_SCRIPT: &str = include_str!("../scripts/core.scm");
 pub enum NetEvent {
     Send { client_id: isize, message: String },
     Broadcast { message: String },
+    Whisper { from: isize, to: isize, message: String },
     Disconnect { client_id: isize },
 }
 
@@ -59,11 +60,27 @@ impl GameEngine {
         let mut vm = Engine::new();
         let outbox = Arc::new(Mutex::new(Vec::new()));
 
-        // Register Rust interfaces accessible to Scheme
+        // =========================================================================
+        // System Logging & Diagnostics
+        // =========================================================================
+        vm.register_fn("system-log", |level: String, msg: String| {
+            eprintln!("[{level}] {msg}");
+        });
+        // Deprecated alias for backward compatibility
         vm.register_fn("rust-log", |level: String, msg: String| {
             eprintln!("[{level}] {msg}");
         });
 
+        // =========================================================================
+        // System Utilities (Random numbers, etc.)
+        // =========================================================================
+        vm.register_fn("system-utils-random-int", |min: i64, max: i64| -> i64 {
+            if min >= max {
+                return min;
+            }
+            rand::random_range(min..=max)
+        });
+        // Deprecated alias for backward compatibility
         vm.register_fn("rust-random-int", |min: i64, max: i64| -> i64 {
             if min >= max {
                 return min;
@@ -71,6 +88,16 @@ impl GameEngine {
             rand::random_range(min..=max)
         });
 
+        // =========================================================================
+        // System Time (Unix epoch in seconds with high precision f64)
+        // =========================================================================
+        vm.register_fn("system-time-now", || -> f64 {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs_f64())
+                .unwrap_or(0.0)
+        });
+        // Deprecated alias for backward compatibility
         vm.register_fn("rust-millis", || -> i64 {
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -78,6 +105,9 @@ impl GameEngine {
                 .unwrap_or(0)
         });
 
+        // =========================================================================
+        // Sandboxed File Storage
+        // =========================================================================
         let sb_write = sandbox_dir.clone();
         vm.register_fn("system-file-write", move |path: String, content: String| -> bool {
             if let Some(target) = resolve_sandboxed_path(&sb_write, &path) {
@@ -100,31 +130,50 @@ impl GameEngine {
         });
 
         // =========================================================================
-        // The 4 Network & System Primitives registered for Scheme
+        // System Network Primitives
         // =========================================================================
         let outbox_send = Arc::clone(&outbox);
-        vm.register_fn("net-send!", move |client_id: isize, msg: String| -> bool {
+        vm.register_fn("system-net-send!", move |client_id: isize, msg: String| -> bool {
             outbox_send.lock().unwrap().push(NetEvent::Send { client_id, message: msg });
+            true
+        });
+        let outbox_legacy_send = Arc::clone(&outbox);
+        vm.register_fn("net-send!", move |client_id: isize, msg: String| -> bool {
+            outbox_legacy_send.lock().unwrap().push(NetEvent::Send { client_id, message: msg });
             true
         });
 
         let outbox_bc = Arc::clone(&outbox);
-        vm.register_fn("net-broadcast!", move |msg: String| -> bool {
+        vm.register_fn("system-net-broadcast!", move |msg: String| -> bool {
             outbox_bc.lock().unwrap().push(NetEvent::Broadcast { message: msg });
+            true
+        });
+        let outbox_legacy_bc = Arc::clone(&outbox);
+        vm.register_fn("net-broadcast!", move |msg: String| -> bool {
+            outbox_legacy_bc.lock().unwrap().push(NetEvent::Broadcast { message: msg });
+            true
+        });
+
+        let outbox_wh = Arc::clone(&outbox);
+        vm.register_fn("system-net-whisper!", move |from: isize, to: isize, msg: String| -> bool {
+            outbox_wh.lock().unwrap().push(NetEvent::Whisper { from, to, message: msg });
+            true
+        });
+        let outbox_legacy_wh = Arc::clone(&outbox);
+        vm.register_fn("net-whisper!", move |from: isize, to: isize, msg: String| -> bool {
+            outbox_legacy_wh.lock().unwrap().push(NetEvent::Whisper { from, to, message: msg });
             true
         });
 
         let outbox_dc = Arc::clone(&outbox);
-        vm.register_fn("net-disconnect!", move |client_id: isize| -> bool {
+        vm.register_fn("system-net-disconnect!", move |client_id: isize| -> bool {
             outbox_dc.lock().unwrap().push(NetEvent::Disconnect { client_id });
             true
         });
-
-        vm.register_fn("system-time-now", || -> f64 {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs_f64())
-                .unwrap_or(0.0)
+        let outbox_legacy_dc = Arc::clone(&outbox);
+        vm.register_fn("net-disconnect!", move |client_id: isize| -> bool {
+            outbox_legacy_dc.lock().unwrap().push(NetEvent::Disconnect { client_id });
+            true
         });
 
         // Script loading with priority:

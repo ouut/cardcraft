@@ -204,20 +204,32 @@ fn test_lisp_god_mode() {
 }
 
 #[test]
-fn test_rust_interfaces_from_scheme() {
+fn test_system_interfaces_from_scheme() {
     let mut engine = GameEngine::new().unwrap();
 
-    // 1. Test rust-random-int
-    let res = engine.execute_command("(rust-random-int 10 20)").unwrap();
-    let n: i64 = res.parse().expect("Expected integer from rust-random-int");
+    // 1. Test system-utils-random-int (and legacy alias rust-random-int)
+    let res = engine.execute_command("(system-utils-random-int 10 20)").unwrap();
+    let n: i64 = res.parse().expect("Expected integer from system-utils-random-int");
     assert!(n >= 10 && n <= 20, "Number was: {}", n);
 
-    // 2. Test rust-millis
-    let res_time = engine.execute_command("(rust-millis)").unwrap();
-    let t: i64 = res_time.parse().expect("Expected timestamp from rust-millis");
-    assert!(t > 0);
+    let res_legacy = engine.execute_command("(rust-random-int 10 20)").unwrap();
+    let n_legacy: i64 = res_legacy.parse().expect("Expected integer from rust-random-int");
+    assert!(n_legacy >= 10 && n_legacy <= 20);
 
-    // 3. Test system-file-write and system-file-read in sandboxed saves/
+    // 2. Test system-time-now (and legacy alias rust-millis)
+    let res_time = engine.execute_command("(system-time-now)").unwrap();
+    let t: f64 = res_time.parse().expect("Expected float timestamp from system-time-now");
+    assert!(t > 1000000.0);
+
+    let res_millis = engine.execute_command("(rust-millis)").unwrap();
+    let t_ms: i64 = res_millis.parse().expect("Expected integer millis from rust-millis");
+    assert!(t_ms > 0);
+
+    // 3. Test system-log (and legacy alias rust-log)
+    let log_res = engine.execute_command("(system-log \"INFO\" \"Testing system-log\")").unwrap();
+    assert_eq!(log_res, "#<void>");
+
+    // 4. Test system-file-write and system-file-read in sandboxed saves/
     let save_file = "test_save.txt";
     let cmd_write = format!("(system-file-write \"{}\" \"CardCraft Save Data 123\")", save_file);
     let fb_write = engine.execute_command(&cmd_write).unwrap();
@@ -227,7 +239,7 @@ fn test_rust_interfaces_from_scheme() {
     let fb_read = engine.execute_command(&cmd_read).unwrap();
     assert!(fb_read.contains("CardCraft Save Data 123"));
 
-    // 4. Test sandbox traversal prevention (writing outside sandbox is rejected)
+    // 5. Test sandbox traversal prevention (writing outside sandbox is rejected)
     let cmd_escape = "(system-file-write \"../../escape_hack.txt\" \"pwn\")";
     let fb_escape = engine.execute_command(cmd_escape).unwrap();
     assert_eq!(fb_escape, "#false");
@@ -242,22 +254,35 @@ fn test_network_primitives() {
     let time_val: f64 = time_str.parse().expect("Expected float from system-time-now");
     assert!(time_val > 1000000.0, "Timestamp was: {}", time_val);
 
-    // 2. Test net-send!
-    engine.execute_command("(net-send! 100 \"Hello Client 100\")").unwrap();
+    // 2. Test system-net-send! (and legacy net-send!)
+    engine.execute_command("(system-net-send! 100 \"Hello Client 100\")").unwrap();
     let events = engine.drain_net_events();
     assert_eq!(events, vec![
         NetEvent::Send { client_id: 100, message: "Hello Client 100".to_string() }
     ]);
 
-    // 3. Test net-broadcast!
-    engine.execute_command("(net-broadcast! \"Server rebooting\")").unwrap();
+    engine.execute_command("(net-send! 100 \"Legacy Send\")").unwrap();
+    let events_legacy = engine.drain_net_events();
+    assert_eq!(events_legacy, vec![
+        NetEvent::Send { client_id: 100, message: "Legacy Send".to_string() }
+    ]);
+
+    // 3. Test system-net-broadcast! (and legacy net-broadcast!)
+    engine.execute_command("(system-net-broadcast! \"Server rebooting\")").unwrap();
     let events = engine.drain_net_events();
     assert_eq!(events, vec![
         NetEvent::Broadcast { message: "Server rebooting".to_string() }
     ]);
 
-    // 4. Test net-disconnect!
-    engine.execute_command("(net-disconnect! 100)").unwrap();
+    // 4. Test system-net-whisper!
+    engine.execute_command("(system-net-whisper! 10 20 \"Secret message\")").unwrap();
+    let events = engine.drain_net_events();
+    assert_eq!(events, vec![
+        NetEvent::Whisper { from: 10, to: 20, message: "Secret message".to_string() }
+    ]);
+
+    // 5. Test system-net-disconnect! (and legacy net-disconnect!)
+    engine.execute_command("(system-net-disconnect! 100)").unwrap();
     let events = engine.drain_net_events();
     assert_eq!(events, vec![
         NetEvent::Disconnect { client_id: 100 }

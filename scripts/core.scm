@@ -62,7 +62,7 @@
   (if (null? lst)
       #f
       (let* ([len (length lst)]
-             [idx (rust-random-int 0 (- len 1))])
+             [idx (system-utils-random-int 0 (- len 1))])
         (list-ref lst idx))))
 
 ;; Card Value Lookups
@@ -599,8 +599,8 @@
 (define (net-on-connect! cid)
   (let ([default-name (string-append "Player_" (number->string cid))])
     (set! *net-clients* (cons (list cid default-name "Lobby") *net-clients*))
-    (net-send! cid (string-append "=== Welcome to CardCraft Online! You are " default-name " ==="))
-    (net-broadcast! (string-append ">>> " default-name " connected to the server."))
+    (system-net-send! cid (string-append "=== Welcome to CardCraft Online! You are " default-name " ==="))
+    (system-net-broadcast! (string-append ">>> " default-name " connected to the server."))
     "OK"))
 
 ;; Hook 2: net-on-disconnect!
@@ -609,7 +609,7 @@
     (if c
         (let ([name (cadr c)])
           (remove-net-client! cid)
-          (net-broadcast! (string-append "<<< " name " disconnected from the server."))
+          (system-net-broadcast! (string-append "<<< " name " disconnected from the server."))
           "OK")
         "OK")))
 
@@ -627,26 +627,26 @@
             [(equal? verb "nick")
              (if (null? args)
                  (begin
-                   (net-send! cid "Usage: nick <new-name>")
+                   (system-net-send! cid "Usage: nick <new-name>")
                    "Usage: nick <new-name>")
                  (let ([new-name (car args)])
                    (if (find-net-client-by-name new-name)
                        (begin
-                         (net-send! cid (string-append "Name '" new-name "' is already taken."))
+                         (system-net-send! cid (string-append "Name '" new-name "' is already taken."))
                          "Name taken")
                        (begin
                          (update-net-client-name! cid new-name)
-                         (net-broadcast! (string-append "*** " name " is now known as " new-name "."))
+                         (system-net-broadcast! (string-append "*** " name " is now known as " new-name "."))
                          "OK"))))]
 
             ;; 2. Public Chat: say <text...>
             [(equal? verb "say")
              (if (null? args)
                  (begin
-                   (net-send! cid "Usage: say <message...>")
+                   (system-net-send! cid "Usage: say <message...>")
                    "Usage: say <message...>")
                  (let ([chat-text (join-strings args " ")])
-                   (net-broadcast! (string-append "[" name "]: " chat-text))
+                   (system-net-broadcast! (string-append "[" name "]: " chat-text))
                    (add-log! (string-append "[" name "]: " chat-text))
                    "OK"))]
 
@@ -654,29 +654,29 @@
             [(or (equal? verb "w") (equal? verb "tell") (equal? verb "whisper"))
              (if (< (length args) 2)
                  (begin
-                   (net-send! cid "Usage: w <username> <message...>")
+                   (system-net-send! cid "Usage: w <username> <message...>")
                    "Usage: w <username> <message...>")
                  (let* ([target-name (car args)]
                         [chat-text (join-strings (cdr args) " ")]
                         [target (find-net-client-by-name target-name)])
                    (if (not target)
                        (begin
-                         (net-send! cid (string-append "User '" target-name "' not found."))
+                         (system-net-send! cid (string-append "User '" target-name "' not found."))
                          "User not found")
                        (let ([target-cid (car target)])
-                         (net-send! target-cid (string-append "[Private from " name "]: " chat-text))
-                         (net-send! cid (string-append "[Private to " target-name "]: " chat-text))
+                         (system-net-send! target-cid (string-append "[Private from " name "]: " chat-text))
+                         (system-net-send! cid (string-append "[Private to " target-name "]: " chat-text))
                          "OK"))))]
 
             ;; 4. Who / Users list: who or users
             [(or (equal? verb "who") (equal? verb "users") (equal? verb "online"))
              (let* ([names (map (lambda (cl) (cadr cl)) *net-clients*)]
                     [msg (string-append "Online users (" (number->string (length names)) "): " (join-strings names ", "))])
-               (net-send! cid msg)
+               (system-net-send! cid msg)
                msg)]
 
             ;; 5. Otherwise: CAD Game Command (s 1 2, b 1, u 1, etc.)
             [else
              (let ([res (game-input cid tokens)])
-               (net-send! cid (string-append "Result: " res))
+               (system-net-send! cid (string-append "Result: " res))
                res)])))))
