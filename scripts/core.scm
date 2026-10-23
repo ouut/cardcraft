@@ -516,52 +516,100 @@
      (string-append "[" (join-strings (map to-json-str v) ",") "]")]
     [else "\"unknown\""]))
 
-;; Export full game state as JSON
+(define *tui-input-buffer* "")
+(define *tui-last-feedback* "OK")
+
+(define (escape-json-str s)
+  (let ([len (string-length s)])
+    (let loop ([i 0] [acc '()])
+      (if (>= i len)
+          (list->string (reverse acc))
+          (let ([ch (string-ref s i)])
+            (cond
+              [(char=? ch #\\) (loop (+ i 1) (cons #\\ (cons #\\ acc)))]
+              [(char=? ch #\") (loop (+ i 1) (cons #\" (cons #\\ acc)))]
+              [(char=? ch #\newline) (loop (+ i 1) (cons #\n (cons #\\ acc)))]
+              [else (loop (+ i 1) (cons ch acc))]))))))
+
+;; Export full-screen character canvas as JSON
 (define (game-render)
-  (let* ([day-prog (/ (- *world-day-duration* *world-day-time-left*) *world-day-duration*)]
-         [stacks-json
-           (map (lambda (s)
-                  (let ([prog-val (if (number? (stack-progress s)) (/ (stack-progress s) (stack-total-time s)) '())]
-                        [tot-val (if (number? (stack-total-time s)) (stack-total-time s) '())]
-                        [rec-val (if (string? (stack-recipe-name s)) (stack-recipe-name s) '())])
-                    (list 'object
-                          (list
-                            (list 'id (stack-id s))
-                            (list 'cards (stack-cards s))
-                            (list 'progress prog-val)
-                            (list 'total_time tot-val)
-                            (list 'recipe_name rec-val)
-                            (list 'status (stack-status s))))))
-                *world-stacks*)]
-         [shop-json
-           (list
-             (list 'object (list (list 'id "basic") (list 'name "Basic Pack") (list 'cost 3)))
-             (list 'object (list (list 'id "food") (list 'name "Food Pack") (list 'cost 5))))]
-         [logs-truncated
-           (if (> (length *world-logs*) 8)
-               (let loop ([l *world-logs*] [n 8] [acc '()])
-                 (if (or (null? l) (<= n 0))
-                     (reverse acc)
-                     (loop (cdr l) (- n 1) (cons (car l) acc))))
-               *world-logs*)])
-    (to-json-str
-      (list 'object
-        (list
-          (list 'meta
-            (list 'object
-              (list
-                (list 'moon *world-moon*)
-                (list 'day_progress day-prog)
-                (list 'day_seconds_left *world-day-time-left*)
-                (list 'gold *world-gold*)
-                (list 'food_current (total-food-value))
-                (list 'food_required (count-villagers))
-                (list 'card_count (total-card-count))
-                (list 'card_limit (calculate-card-limit))
-                (list 'status *world-status*))))
-          (list 'stacks stacks-json)
-          (list 'shop shop-json)
-          (list 'logs logs-truncated))))))
+  (let* ([sz (system-window-size)]
+         [width (max 80 (car sz))]
+         [line-sep (string-append "+" (make-string (- width 2) #\-) "+")]
+         [day-bar-len 10]
+         [day-prog (/ (- *world-day-duration* *world-day-time-left*) *world-day-duration*)]
+         [filled (min day-bar-len (max 0 (inexact->exact (round (* day-prog day-bar-len)))))]
+         [empty (max 0 (- day-bar-len filled))]
+         [time-bar (string-append "[" (make-string filled #\=) (make-string empty #\.) "]")]
+         [stats-text
+           (string-append "MOON " (number->string *world-moon*)
+                          " | " time-bar " " (number->string (inexact->exact (round *world-day-time-left*))) "s"
+                          " | Food: " (number->string (total-food-value)) "/" (number->string (count-villagers))
+                          " | Gold: " (number->string *world-gold*) "G"
+                          " | Cards: " (number->string (total-card-count)) "/" (number->string (calculate-card-limit))
+                          " | [" *world-status* "]")]
+         [stats-line (string-append "| " stats-text (make-string (max 0 (- width (+ (string-length stats-text) 3))) #\space) "|")]
+         
+         [board-title (string-append "+-- Board & Stacks " (make-string (max 0 (- width 22)) #\-) "+")]
+         [stack-lines
+           (if (null? *world-stacks*)
+               (list (string-append "| (Empty board)" (make-string (max 0 (- width 17)) #\space) "|"))
+               (map (lambda (s)
+                      (let* ([id-num (stack-id s)]
+                             [id-str (string-append "[" (if (< id-num 10) " " "") (number->string id-num) "] ")]
+                             [cards-str (join-strings (stack-cards s) " ")]
+                             [prog-str (if (number? (stack-progress s))
+                                           (let* ([pct (/ (stack-progress s) (stack-total-time s))]
+                                                  [f (min 8 (max 0 (inexact->exact (round (* pct 8)))))]
+                                                  [e (max 0 (- 8 f))]
+                                                  [rem-time (max 0.0 (- (stack-total-time s) (stack-progress s)))])
+                                             (string-append " [" (make-string f #\=) (make-string e #\.) "] ("
+                                                            (number->string (inexact->exact (round rem-time))) "s / "
+                                                            (if (string? (stack-recipe-name s)) (stack-recipe-name s) "Harvest Berry") ")"))
+                                           "")]
+                             [content (string-append id-str cards-str prog-str)])
+                        (string-append "| " content (make-string (max 0 (- width (+ (string-length content) 3))) #\space) "|")))
+                    *world-stacks*))]
+         
+         [actions-title (string-append "+-- Actions & Store " (make-string (max 0 (- width 23)) #\-) "+")]
+         [act-text "ACTIONS: [b basic] Basic Pack (3G)  |  [b food] Food Pack (5G)"]
+         [actions-line (string-append "| " act-text (make-string (max 0 (- width (+ (string-length act-text) 3))) #\space) "|")]
+         
+         [logs-title (string-append "+-- System Event Log & Chat " (make-string (max 0 (- width 30)) #\-) "+")]
+         [recent-logs (let loop ([l *world-logs*] [n 4] [acc '()])
+                        (if (or (null? l) (<= n 0))
+                            (reverse acc)
+                            (loop (cdr l) (- n 1) (cons (car l) acc))))]
+         [log-lines (map (lambda (l)
+                           (let ([content (string-append "• " l)])
+                             (string-append "| " content (make-string (max 0 (- width (+ (string-length content) 3))) #\space) "|")))
+                         recent-logs)]
+         
+         [prompt-title (string-append "+-- Command Prompt [" *tui-last-feedback* "] " (make-string (max 0 (- width (+ 24 (string-length *tui-last-feedback*)))) #\-) "+")]
+         [cmd-content (string-append "Command: " *tui-input-buffer*)]
+         [cmd-line (string-append "| " cmd-content (make-string (max 0 (- width (+ (string-length cmd-content) 3))) #\space) "|")]
+         
+         [grid (append
+                 (list (string-append "+-- CardCraft Console " (make-string (max 0 (- width 24)) #\-) "+")
+                       stats-line
+                       board-title)
+                 stack-lines
+                 (list actions-title
+                       actions-line
+                       logs-title)
+                 log-lines
+                 (list prompt-title
+                       cmd-line
+                       line-sep))]
+         [cursor-x (+ 11 (string-length *tui-input-buffer*))]
+         [cursor-y (- (length grid) 2)])
+    (string-append
+      "{"
+        "\"cursor\": [" (number->string cursor-x) ", " (number->string cursor-y) "],"
+        "\"grid\": ["
+          (join-strings (map (lambda (r) (string-append "\"" (escape-json-str r) "\"")) grid) ",")
+        "]"
+      "}")))
 
 ;;; =============================================================================
 ;;; Network Hooks, Online State & Chat Dispatcher (The 3 Hooks)
@@ -613,8 +661,13 @@
           "OK")
         "OK")))
 
-;; Hook 3: net-on-message!
-(define (net-on-message! cid msg-str)
+(define (starts-with? str prefix)
+  (let ([plen (string-length prefix)]
+        [slen (string-length str)])
+    (and (>= slen plen)
+         (equal? (substring str 0 plen) prefix))))
+
+(define (dispatch-command! cid msg-str)
   (let* ([c (find-net-client cid)]
          [name (if c (cadr c) (string-append "Player_" (number->string cid)))]
          [tokens (split-spaces msg-str)])
@@ -680,3 +733,46 @@
              (let ([res (game-input cid tokens)])
                (system-net-send! cid (string-append "Result: " res))
                res)])))))
+
+;; Hook 3: net-on-message!
+(define (net-on-message! cid msg-str)
+  (cond
+    ;; 1. TUI key events from keyboard
+    [(starts-with? msg-str "key:")
+     (let ([k (substring msg-str 4 (string-length msg-str))])
+       (cond
+         [(equal? k "enter")
+          (let ([cmd *tui-input-buffer*])
+            (set! *tui-input-buffer* "")
+            (if (equal? cmd "")
+                "OK"
+                (let ([res (dispatch-command! cid cmd)])
+                  (set! *tui-last-feedback* res)
+                  res)))]
+         [(equal? k "backspace")
+          (let ([len (string-length *tui-input-buffer*)])
+            (if (> len 0)
+                (set! *tui-input-buffer* (substring *tui-input-buffer* 0 (- len 1)))
+                #f)
+            "OK")]
+         [(equal? k "space")
+          (set! *tui-input-buffer* (string-append *tui-input-buffer* " "))
+          "OK"]
+         [(and (= (string-length k) 1))
+          (set! *tui-input-buffer* (string-append *tui-input-buffer* k))
+          "OK"]
+         [else "OK"]))]
+
+    ;; 2. Window resize event
+    [(starts-with? msg-str "resize:")
+     "OK"]
+
+    ;; 3. Mouse event
+    [(starts-with? msg-str "mouse:")
+     "OK"]
+
+    ;; 4. Direct text command (from TCP, WebSocket, or local test)
+    [else
+     (let ([res (dispatch-command! cid msg-str)])
+       (set! *tui-last-feedback* res)
+       res)]))

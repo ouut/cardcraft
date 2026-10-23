@@ -1,7 +1,6 @@
 use anyhow::Result;
 use ratatui::{backend::TestBackend, Terminal};
 
-use crate::cad::CommandState;
 use crate::render::render_ui;
 use crate::view::GameViewSnapshot;
 
@@ -24,9 +23,9 @@ impl VirtualScreen {
         self.terminal = term;
     }
 
-    pub fn render(&mut self, snapshot: &GameViewSnapshot, cmd: &CommandState) -> Result<()> {
+    pub fn render(&mut self, snapshot: &GameViewSnapshot) -> Result<()> {
         self.terminal.draw(|frame| {
-            render_ui(frame, snapshot, cmd);
+            render_ui(frame, snapshot);
         })?;
         Ok(())
     }

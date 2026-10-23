@@ -11,7 +11,6 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, Terminal};
 
 use cardcraft::buffer::VirtualScreen;
-use cardcraft::cad::CommandState;
 use cardcraft::engine::GameEngine;
 use cardcraft::render::render_ui;
 
@@ -269,22 +268,18 @@ async fn run_event_loop(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     handle: cardcraft::server::EngineHandle,
 ) -> anyhow::Result<()> {
-    let mut cmd_state = CommandState::new();
     handle.connect(0).await;
     let tick_interval = Duration::from_millis(50);
 
     loop {
         // Draw frame from EngineHandle
-        let snapshot_opt = handle.get_snapshot_view().await;
-        if let Some(ref snapshot) = snapshot_opt {
+        if let Some(snapshot) = handle.get_snapshot_view().await {
             terminal.draw(|f| {
-                render_ui(f, snapshot, &cmd_state);
+                render_ui(f, &snapshot);
             })?;
         }
 
-        let is_raw_mode = snapshot_opt.as_ref().map(|s| s.is_raw_input()).unwrap_or(false);
-
-        // Poll keyboard event non-blockingly
+        // Poll keyboard and hardware events non-blockingly
         if event::poll(tick_interval)? {
             match event::read()? {
                 Event::Key(key) => {
@@ -296,92 +291,47 @@ async fn run_event_loop(
                         break;
                     }
 
-                    if is_raw_mode {
-                        let key_msg = match key.code {
-                            KeyCode::Char(c) => {
-                                if key.modifiers.contains(KeyModifiers::CONTROL) {
-                                    format!("key:ctrl+{}", c)
-                                } else {
-                                    format!("key:{}", c)
-                                }
+                    let key_msg = match key.code {
+                        KeyCode::Char(c) => {
+                            if key.modifiers.contains(KeyModifiers::CONTROL) {
+                                format!("key:ctrl+{}", c)
+                            } else {
+                                format!("key:{}", c)
                             }
-                            KeyCode::Up => "key:up".to_string(),
-                            KeyCode::Down => "key:down".to_string(),
-                            KeyCode::Left => "key:left".to_string(),
-                            KeyCode::Right => "key:right".to_string(),
-                            KeyCode::Enter => "key:enter".to_string(),
-                            KeyCode::Backspace => "key:backspace".to_string(),
-                            KeyCode::Delete => "key:delete".to_string(),
-                            KeyCode::Esc => "key:esc".to_string(),
-                            KeyCode::Tab => "key:tab".to_string(),
-                            KeyCode::Home => "key:home".to_string(),
-                            KeyCode::End => "key:end".to_string(),
-                            KeyCode::PageUp => "key:pageup".to_string(),
-                            KeyCode::PageDown => "key:pagedown".to_string(),
-                            KeyCode::F(n) => format!("key:f{}", n),
-                            _ => continue,
-                        };
-                        handle.message(0, key_msg).await;
-                    } else {
-                        match key.code {
-                            KeyCode::Char(c) => {
-                                cmd_state.insert_char(c);
-                            }
-                            KeyCode::Backspace => {
-                                cmd_state.delete_backspace();
-                            }
-                            KeyCode::Delete => {
-                                cmd_state.delete_char();
-                            }
-                            KeyCode::Left => {
-                                cmd_state.move_cursor_left();
-                            }
-                            KeyCode::Right => {
-                                cmd_state.move_cursor_right();
-                            }
-                            KeyCode::Home => {
-                                cmd_state.move_cursor_home();
-                            }
-                            KeyCode::End => {
-                                cmd_state.move_cursor_end();
-                            }
-                            KeyCode::Up => {
-                                cmd_state.history_up();
-                            }
-                            KeyCode::Down => {
-                                cmd_state.history_down();
-                            }
-                            KeyCode::Enter => {
-                                let cmd = cmd_state.submit();
-                                if cmd == "q" || cmd == "quit" || cmd == "exit" {
-                                    break;
-                                }
-                                let (feedback, _) = handle.message(0, cmd).await;
-                                cmd_state.set_feedback(feedback);
-                            }
-                            _ => {}
                         }
-                    }
+                        KeyCode::Up => "key:up".to_string(),
+                        KeyCode::Down => "key:down".to_string(),
+                        KeyCode::Left => "key:left".to_string(),
+                        KeyCode::Right => "key:right".to_string(),
+                        KeyCode::Enter => "key:enter".to_string(),
+                        KeyCode::Backspace => "key:backspace".to_string(),
+                        KeyCode::Delete => "key:delete".to_string(),
+                        KeyCode::Esc => "key:esc".to_string(),
+                        KeyCode::Tab => "key:tab".to_string(),
+                        KeyCode::Home => "key:home".to_string(),
+                        KeyCode::End => "key:end".to_string(),
+                        KeyCode::PageUp => "key:pageup".to_string(),
+                        KeyCode::PageDown => "key:pagedown".to_string(),
+                        KeyCode::F(n) => format!("key:f{}", n),
+                        _ => continue,
+                    };
+                    handle.message(0, key_msg).await;
                 }
                 Event::Mouse(mouse) => {
-                    if is_raw_mode {
-                        let kind_str = match mouse.kind {
-                            crossterm::event::MouseEventKind::Down(btn) => format!("down:{:?}", btn).to_lowercase(),
-                            crossterm::event::MouseEventKind::Up(btn) => format!("up:{:?}", btn).to_lowercase(),
-                            crossterm::event::MouseEventKind::Drag(btn) => format!("drag:{:?}", btn).to_lowercase(),
-                            crossterm::event::MouseEventKind::Moved => "move".to_string(),
-                            crossterm::event::MouseEventKind::ScrollDown => "scrolldown".to_string(),
-                            crossterm::event::MouseEventKind::ScrollUp => "scrollup".to_string(),
-                            _ => "other".to_string(),
-                        };
-                        let mouse_msg = format!("mouse:{}:{}:{}", kind_str, mouse.column, mouse.row);
-                        handle.message(0, mouse_msg).await;
-                    }
+                    let kind_str = match mouse.kind {
+                        crossterm::event::MouseEventKind::Down(btn) => format!("down:{:?}", btn).to_lowercase(),
+                        crossterm::event::MouseEventKind::Up(btn) => format!("up:{:?}", btn).to_lowercase(),
+                        crossterm::event::MouseEventKind::Drag(btn) => format!("drag:{:?}", btn).to_lowercase(),
+                        crossterm::event::MouseEventKind::Moved => "move".to_string(),
+                        crossterm::event::MouseEventKind::ScrollDown => "scrolldown".to_string(),
+                        crossterm::event::MouseEventKind::ScrollUp => "scrollup".to_string(),
+                        _ => "other".to_string(),
+                    };
+                    let mouse_msg = format!("mouse:{}:{}:{}", kind_str, mouse.column, mouse.row);
+                    handle.message(0, mouse_msg).await;
                 }
                 Event::Resize(cols, rows) => {
-                    if is_raw_mode {
-                        handle.message(0, format!("resize:{}:{}", cols, rows)).await;
-                    }
+                    handle.message(0, format!("resize:{}:{}", cols, rows)).await;
                 }
                 _ => {}
             }
@@ -396,32 +346,30 @@ fn run_self_test() -> anyhow::Result<()> {
     println!("=== CardCraft Headless Self-Test ===");
     let mut engine = GameEngine::new()?;
     let mut screen = VirtualScreen::new(90, 24)?;
-    let mut cmd_state = CommandState::new();
 
     // 1. Initial snapshot
     let snap = engine.get_snapshot()?;
-    screen.render(&snap, &cmd_state)?;
-    println!("Initial frame render success. Cards on board: {}", snap.meta.card_count);
+    screen.render(&snap)?;
+    println!("Initial frame render success.");
     assert!(screen.contains("Villager"));
     assert!(screen.contains("BerryBush"));
 
     // 2. Stack Villager (1) onto BerryBush (2)
     let feedback = engine.execute_command("s 1 2")?;
-    cmd_state.set_feedback(feedback);
-    println!("Executed: s 1 2");
+    println!("Executed: s 1 2 -> {}", feedback);
 
     // 3. Tick 2.0s
     engine.tick(2.0)?;
     let snap = engine.get_snapshot()?;
-    screen.render(&snap, &cmd_state)?;
+    screen.render(&snap)?;
     assert!(screen.contains("Harvest Berry"));
     println!("2.0s Tick success: Recipe matching & progress verified.");
 
     // 4. Tick 3.0s (Completion)
     engine.tick(3.0)?;
     let snap = engine.get_snapshot()?;
-    screen.render(&snap, &cmd_state)?;
-    assert!(screen.contains("Produced: Berry") || snap.logs.iter().any(|l| l.contains("Produced")));
+    screen.render(&snap)?;
+    assert!(screen.contains("Produced: Berry"));
     println!("Recipe completed! Berry produced into new slot.");
 
     println!("\nRendered Virtual Frame:\n");

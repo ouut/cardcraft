@@ -20,6 +20,7 @@ CardCraft 采用双向互操作设计：
 │   │ 暴露的系统原语体系 (System Primitives)：            │   │
 │   │ • (system-log level msg)                            │   │
 │   │ • (system-utils-random-int min max)                 │   │
+│   │ • (system-window-size)                              │   │
 │   │ • (system-time-now)                                 │   │
 │   │ • (system-file-write path content)                  │   │
 │   │ • (system-file-read path)                           │   │
@@ -90,7 +91,21 @@ CardCraft 采用双向互操作设计：
 
 ---
 
-### 3. 系统日志输出：`(system-log level msg)`
+### 3. 终端视口尺寸获取：`(system-window-size)`
+* **说明**：获取当前运行环境物理终端窗口的列宽与行数，供全屏 ASCII 渲染器做自适应响应式排版。
+* **参数**：无。
+* **返回值**：`(List)` 二元列表 `'(width height)`，如 `'(80 25)`。通过 `(car (system-window-size))` 取得列宽，`(cadr (system-window-size))` 取得行高。（兼容别名：`system-terminal-width` 与 `system-terminal-height`）
+* **示例**：
+  ```scheme
+  (let* ([sz (system-window-size)]
+         [width (car sz)]
+         [height (cadr sz)])
+    (system-log "INFO" (string-append "Terminal: " (number->string width) "x" (number->string height))))
+  ```
+
+---
+
+### 4. 系统日志输出：`(system-log level msg)`
 * **说明**：向宿主标准错误（stderr）或后台日志管道打印格式化日志。（兼容别名：`rust-log`）
 * **参数**：
   * `level` (String): 日志级别，如 `"DEBUG"`、`"INFO"`、`"WARN"`、`"ERROR"`。
@@ -103,7 +118,7 @@ CardCraft 采用双向互操作设计：
 
 ---
 
-### 4. 文件写入（沙盒保护）：`(system-file-write path content)`
+### 5. 文件写入（沙盒保护）：`(system-file-write path content)`
 * **说明**：将字符串保存至本地磁盘文件（用于存档或导出游戏数据）。
 * **安全沙盒 (Path Traversal Jail)**：所有文件写入被强制限制在当前游戏目录的 `<game_dir>/saves/` 目录下，系统自动创建该目录，拒绝任何 `../` 逃逸尝试。
 * **参数**：
@@ -117,7 +132,7 @@ CardCraft 采用双向互操作设计：
 
 ---
 
-### 5. 文件读取（沙盒保护）：`(system-file-read path)`
+### 6. 文件读取（沙盒保护）：`(system-file-read path)`
 * **说明**：从本地磁盘读取文本文件（用于读档）。
 * **安全沙盒 (Path Traversal Jail)**：所有文件读取强制限定在 `<game_dir>/saves/` 目录下，禁止读取宿主系统文件。
 * **参数**：
@@ -131,7 +146,7 @@ CardCraft 采用双向互操作设计：
 
 ---
 
-### 6. 网络通信原语与 3 大事件钩子 (The Network Primitives & Hooks)
+### 7. 网络通信原语与 3 大事件钩子 (The Network Primitives & Hooks)
 
 CardCraft 将所有网络与多人业务（聊天、私聊、房间、匹配、游戏指令路由）下放至 Scheme，Rust 宿主仅负责高并发套接字搬运：
 

@@ -88,11 +88,9 @@ impl GameEngine {
             rand::random_range(min..=max)
         });
 
-        vm.register_fn("system-terminal-width", || -> i64 {
-            crossterm::terminal::size().map(|(w, _)| w as i64).unwrap_or(80)
-        });
-        vm.register_fn("system-terminal-height", || -> i64 {
-            crossterm::terminal::size().map(|(_, h)| h as i64).unwrap_or(25)
+        vm.register_fn("system-window-size", || -> (isize, isize) {
+            let (w, h) = crossterm::terminal::size().unwrap_or((80, 25));
+            (w as isize, h as isize)
         });
 
         // =========================================================================

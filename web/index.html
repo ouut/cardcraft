@@ -158,6 +158,20 @@
     }
 
     function renderSnapshot(snap) {
+      if (snap.grid && snap.grid.length > 0) {
+        let gridEl = document.getElementById("terminalGrid");
+        if (!gridEl) {
+          const main = document.querySelector("main");
+          if (main) {
+            main.innerHTML = `<pre id="terminalGrid" style="flex:1; background:#000; color:#c9d1d9; font-family:'Courier New', monospace; font-size:14px; line-height:1.2; padding:12px; overflow:auto; white-space:pre; border-radius:6px; border:1px solid var(--border);"></pre>`;
+            gridEl = document.getElementById("terminalGrid");
+          }
+        }
+        if (gridEl) {
+          gridEl.textContent = snap.grid.join("\n");
+        }
+      }
+
       if (snap.title) {
         document.getElementById("pageTitle").textContent = snap.title;
       }

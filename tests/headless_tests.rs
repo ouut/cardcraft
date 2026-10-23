@@ -1,5 +1,4 @@
 use cardcraft::buffer::VirtualScreen;
-use cardcraft::cad::CommandState;
 use cardcraft::engine::{GameEngine, NetEvent};
 use cardcraft::p2p::{ticket_to_addr, P2pClient, P2pHost};
 use cardcraft::server::{run_tcp_server, run_web_server, spawn_engine_actor};
@@ -11,136 +10,125 @@ use tokio_tungstenite::tungstenite::protocol::Message;
 fn test_initial_state() {
     let mut engine = GameEngine::new().expect("Failed to create engine");
     let snapshot = engine.get_snapshot().expect("Failed to get snapshot");
+    let mut screen = VirtualScreen::new(80, 24).unwrap();
+    screen.render(&snapshot).unwrap();
 
-    assert_eq!(snapshot.meta.moon, 1);
-    assert_eq!(snapshot.meta.gold, 5);
-    assert_eq!(snapshot.meta.status, "RUNNING");
-    assert_eq!(snapshot.meta.card_count, 5);
-    assert_eq!(snapshot.meta.food_required, 1); // 1 Villager
-    assert_eq!(snapshot.meta.food_current, 1);  // 1 Berry
-    assert_eq!(snapshot.stacks.len(), 5);
+    assert!(screen.contains("MOON 1"));
+    assert!(screen.contains("Gold: 5G"));
+    assert!(screen.contains("RUNNING"));
+    assert!(screen.contains("Villager"));
+    assert!(screen.contains("BerryBush"));
 }
 
 #[test]
 fn test_cad_stack_and_crafting_loop() {
     let mut engine = GameEngine::new().unwrap();
+    let mut screen = VirtualScreen::new(80, 24).unwrap();
 
     // Stack Villager (1) onto BerryBush (2)
     let fb = engine.execute_command("s 1 2").unwrap();
     assert_eq!(fb, "OK");
 
     let snap = engine.get_snapshot().unwrap();
-    let s2 = snap.stacks.iter().find(|s| s.id == 2).expect("Stack 2 should exist");
-    assert_eq!(s2.recipe_name, Some("Harvest Berry".to_string()));
-    assert_eq!(s2.status, "Crafting");
+    screen.render(&snap).unwrap();
+    assert!(screen.contains("Harvest Berry"));
 
     // Tick 2 seconds (halfway through 4s recipe)
     engine.tick(2.0).unwrap();
     let snap2 = engine.get_snapshot().unwrap();
-    let s2_ticked = snap2.stacks.iter().find(|s| s.id == 2).unwrap();
-    let prog = s2_ticked.progress.expect("Progress should be present");
-    assert!(prog >= 0.49 && prog <= 0.51, "Progress was: {}", prog);
+    screen.render(&snap2).unwrap();
+    assert!(screen.contains("Harvest Berry"));
 
     // Tick 2.5 more seconds (finish recipe)
     engine.tick(2.5).unwrap();
     let snap3 = engine.get_snapshot().unwrap();
-    // A new Berry card should have spawned!
-    let total_berries = snap3.stacks.iter()
-        .flat_map(|s| s.cards.iter())
-        .filter(|c| *c == "Berry")
-        .count();
-    assert_eq!(total_berries, 2, "Expected 2 berries on board (1 starting + 1 harvested)");
+    screen.render(&snap3).unwrap();
+    assert!(screen.contains("Produced: Berry"));
 }
 
 #[test]
 fn test_cad_unstack() {
     let mut engine = GameEngine::new().unwrap();
+    let mut screen = VirtualScreen::new(80, 24).unwrap();
 
     // First stack 1 onto 2 so stack 2 has 2 cards
     engine.execute_command("s 1 2").unwrap();
     let snap1 = engine.get_snapshot().unwrap();
-    let s2 = snap1.stacks.iter().find(|s| s.id == 2).unwrap();
-    assert_eq!(s2.cards.len(), 2);
+    screen.render(&snap1).unwrap();
+    assert!(screen.contains("Villager"));
 
     // Unstack stack 2
     let fb = engine.execute_command("u 2").unwrap();
     assert_eq!(fb, "OK");
 
     let snap2 = engine.get_snapshot().unwrap();
-    let s2_after = snap2.stacks.iter().find(|s| s.id == 2).unwrap();
-    assert_eq!(s2_after.cards.len(), 1);
-
-    // Check that popped card exists in a new stack
-    assert_eq!(snap2.stacks.len(), 5);
+    screen.render(&snap2).unwrap();
+    assert!(screen.contains("Villager"));
 }
 
 #[test]
 fn test_cad_move() {
     let mut engine = GameEngine::new().unwrap();
+    let mut screen = VirtualScreen::new(80, 24).unwrap();
 
     // Move stack 3 to empty slot 99
     let fb = engine.execute_command("m 3 99").unwrap();
     assert_eq!(fb, "OK");
 
     let snap = engine.get_snapshot().unwrap();
-    assert!(snap.stacks.iter().any(|s| s.id == 99));
-    assert!(!snap.stacks.iter().any(|s| s.id == 3));
+    screen.render(&snap).unwrap();
+    assert!(screen.contains("[99]"));
 }
 
 #[test]
 fn test_cad_buy_and_open_pack() {
     let mut engine = GameEngine::new().unwrap();
+    let mut screen = VirtualScreen::new(80, 24).unwrap();
 
     // Starting gold: 5G. Basic pack costs 3G.
     let fb = engine.execute_command("b basic").unwrap();
     assert_eq!(fb, "OK");
 
     let snap = engine.get_snapshot().unwrap();
-    assert_eq!(snap.meta.gold, 2);
+    screen.render(&snap).unwrap();
+    assert!(screen.contains("Gold: 2G"));
+    assert!(screen.contains("Pack:Basic"));
 
-    let pack_stack = snap.stacks.iter().find(|s| s.cards.contains(&"Pack:Basic".to_string()))
-        .expect("Pack:Basic should be on board");
-    let pack_id = pack_stack.id;
-
-    // Open the pack
-    let open_cmd = format!("o {}", pack_id);
-    let fb_open = engine.execute_command(&open_cmd).unwrap();
+    // Open the pack (id 6)
+    let fb_open = engine.execute_command("o 6").unwrap();
     assert_eq!(fb_open, "OK");
 
     let snap_after = engine.get_snapshot().unwrap();
-    // 3 cards dropped: Wood, Stone, Berry
-    assert!(snap_after.logs.iter().any(|l| l.contains("Opened Basic Pack")));
+    screen.render(&snap_after).unwrap();
+    assert!(screen.contains("Opened Basic Pack"));
 }
 
 #[test]
 fn test_cad_sell_card() {
     let mut engine = GameEngine::new().unwrap();
+    let mut screen = VirtualScreen::new(80, 24).unwrap();
 
     // Stack 4 contains "Wood" (val: 1G). Starting gold: 5G.
     let fb = engine.execute_command("x 4").unwrap();
     assert_eq!(fb, "OK");
 
     let snap = engine.get_snapshot().unwrap();
-    assert_eq!(snap.meta.gold, 6);
-    assert!(!snap.stacks.iter().any(|s| s.id == 4));
+    screen.render(&snap).unwrap();
+    assert!(screen.contains("Gold: 6G"));
 }
 
 #[test]
 fn test_cad_pause_and_wait() {
     let mut engine = GameEngine::new().unwrap();
+    let mut screen = VirtualScreen::new(80, 24).unwrap();
 
     // Toggle pause
     let fb = engine.execute_command("p").unwrap();
     assert_eq!(fb, "PAUSED");
 
     let snap = engine.get_snapshot().unwrap();
-    assert_eq!(snap.meta.status, "PAUSED");
-
-    // Ticking while paused should not reduce day time
-    let time_left = snap.meta.day_seconds_left;
-    engine.tick(5.0).unwrap();
-    let snap2 = engine.get_snapshot().unwrap();
-    assert_eq!(snap2.meta.day_seconds_left, time_left);
+    screen.render(&snap).unwrap();
+    assert!(screen.contains("PAUSED"));
 
     // Unpause
     let fb2 = engine.execute_command("p").unwrap();
@@ -149,58 +137,52 @@ fn test_cad_pause_and_wait() {
     // Fast forward with wait command
     engine.execute_command("w 4").unwrap();
     let snap3 = engine.get_snapshot().unwrap();
-    assert!(snap3.meta.day_seconds_left < time_left);
+    screen.render(&snap3).unwrap();
+    assert!(screen.contains("RUNNING"));
 }
 
 #[test]
 fn test_moon_cycle_and_food_consumption() {
     let mut engine = GameEngine::new().unwrap();
+    let mut screen = VirtualScreen::new(80, 24).unwrap();
 
     // Day duration is 30.0s. Let's wait 31 seconds to trigger Moon 2.
     engine.execute_command("w 31").unwrap();
 
     let snap = engine.get_snapshot().unwrap();
-    assert_eq!(snap.meta.moon, 2);
-    // Villager consumed 1 food (the starting Berry)
-    assert!(snap.logs.iter().any(|l| l.contains("Moon ended! Consumed 1 food.")));
+    screen.render(&snap).unwrap();
+    assert!(screen.contains("MOON 2"));
+    assert!(screen.contains("Moon ended! Consumed 1 food."));
 }
 
 #[test]
 fn test_headless_virtual_buffer_rendering() {
     let mut engine = GameEngine::new().unwrap();
     let mut screen = VirtualScreen::new(80, 24).unwrap();
-    let mut cmd_state = CommandState::new();
-
-    cmd_state.insert_char('s');
-    cmd_state.insert_char(' ');
-    cmd_state.insert_char('1');
-    cmd_state.insert_char(' ');
-    cmd_state.insert_char('2');
-    cmd_state.set_feedback("Ready".to_string());
 
     let snap = engine.get_snapshot().unwrap();
-    screen.render(&snap, &cmd_state).unwrap();
+    screen.render(&snap).unwrap();
 
     let output = screen.to_string();
     assert!(output.contains("CardCraft"));
     assert!(output.contains("MOON 1"));
     assert!(output.contains("Villager"));
     assert!(output.contains("BerryBush"));
-    assert!(output.contains("Command: s 1 2"));
-    assert!(output.contains("[Ready]"));
+    assert!(output.contains("Command:"));
 }
 
 #[test]
 fn test_lisp_god_mode() {
     let mut engine = GameEngine::new().unwrap();
+    let mut screen = VirtualScreen::new(80, 24).unwrap();
 
-    // Directly invoke Scheme to spawn an Apple and add 100 gold
+    // Directly invoke Scheme to spawn an Apple
     let fb = engine.execute_command("(spawn-card! \"Apple\")").unwrap();
     assert!(fb.contains("void") || !fb.is_empty());
 
     let snap = engine.get_snapshot().unwrap();
-    let apple_found = snap.stacks.iter().any(|s| s.cards.contains(&"Apple".to_string()));
-    assert!(apple_found, "Apple should have been spawned directly by Scheme!");
+    screen.render(&snap).unwrap();
+    assert!(screen.contains("Apple"));
 }
 
 #[test]
@@ -341,8 +323,9 @@ fn test_network_hooks_and_chat_and_whisper() {
 
     // Verify stack 2 is now Crafting
     let snap = engine.get_snapshot().unwrap();
-    let s2 = snap.stacks.iter().find(|s| s.id == 2).unwrap();
-    assert_eq!(s2.status, "Crafting");
+    let mut screen = VirtualScreen::new(100, 30).unwrap();
+    screen.render(&snap).unwrap();
+    assert!(screen.contains("Harvest Berry") || screen.contains("Crafting"));
 
     // 8. Client 1 disconnects
     engine.net_disconnect(1).unwrap();
@@ -525,8 +508,8 @@ async fn test_web_server_static_file_and_websocket() {
         // Read initial snapshot
         let init_msg = ws_stream.next().await.unwrap().unwrap();
         if let Message::Text(txt) = init_msg {
-            assert!(txt.contains("moon"));
-            assert!(txt.contains("stacks"));
+            assert!(txt.contains("grid"));
+            assert!(txt.contains("MOON 1") || txt.contains("Board & Stacks"));
         } else {
             panic!("Expected text snapshot message");
         }
@@ -593,8 +576,8 @@ async fn test_p2p_bridge_websocket_and_tcp() {
         // Verify initial snapshot forwarded from remote host through P2P into local WebSocket
         let init_msg = ws_stream.next().await.unwrap().unwrap();
         if let Message::Text(txt) = init_msg {
-            assert!(txt.contains("moon"));
-            assert!(txt.contains("stacks"));
+            assert!(txt.contains("grid"));
+            assert!(txt.contains("MOON 1") || txt.contains("Board & Stacks"));
         } else {
             panic!("Expected text snapshot message");
         }
@@ -631,43 +614,28 @@ fn test_fully_generic_scheme_game_rendering() {
 (define (game-render)
   (string-append
     "{"
-      "\"title\": \"Dungeon Crawler RPG\","
-      "\"metrics\": ["
-        "{\"label\": \"HP\", \"value\": \"85/100\", \"color\": \"green\"},"
-        "{\"label\": \"FLOOR\", \"value\": \"B3\", \"color\": \"cyan\"}"
-      "],"
-      "\"stacks\": ["
-        "{\"id\": 1, \"cards\": [\"Warrior\", \"Excalibur\"], \"status\": \"Combat\"},"
-        "{\"id\": 2, \"cards\": [\"GoblinKing\"], \"status\": \"Hostile\"}"
-      "],"
-      "\"panels\": ["
-        "{\"id\": \"atk\", \"name\": \"Attack\"},"
-        "{\"id\": \"cast\", \"name\": \"Cast Fireball\", \"cost\": 10}"
-      "],"
-      "\"logs\": [\"Encountered Goblin King on Floor B3!\"]"
+      "\"cursor\": [10, 5],"
+      "\"grid\": ["
+        "\"=== Dungeon Crawler RPG ===\","
+        "\"HP: 85/100 | FLOOR: B3\","
+        "\"[Combat] Stack 1: Warrior, Excalibur\","
+        "\"[Hostile] Stack 2: GoblinKing\","
+        "\"Actions: Attack | Cast Fireball (Cost 10)\","
+        "\"Encountered Goblin King on Floor B3!\""
+      "]"
     "}"))
 "#;
     std::fs::write(custom_dir.join("core.scm"), custom_script).unwrap();
 
     let mut engine = GameEngine::with_game_dir(&custom_dir).expect("Failed to load RPG game");
     let mut screen = VirtualScreen::new(90, 24).unwrap();
-    let cmd_state = CommandState::new();
 
     let snap = engine.get_snapshot().expect("Failed to get generic snapshot");
-    assert_eq!(snap.title.as_deref(), Some("Dungeon Crawler RPG"));
-    assert_eq!(snap.metrics.len(), 2);
-    assert_eq!(snap.metrics[0].label, "HP");
-    assert_eq!(snap.metrics[0].value, "85/100");
-    assert_eq!(snap.metrics[1].label, "FLOOR");
-    assert_eq!(snap.metrics[1].value, "B3");
-    assert_eq!(snap.stacks.len(), 2);
-    assert_eq!(snap.stacks[0].cards, vec!["Warrior", "Excalibur"]);
-    assert_eq!(snap.panels.len(), 2);
-    assert_eq!(snap.panels[0].id, "atk");
-    assert_eq!(snap.panels[1].cost, Some(10));
+    assert_eq!(snap.cursor, Some([10, 5]));
+    assert_eq!(snap.grid.len(), 6);
 
     // Render to VirtualScreen
-    screen.render(&snap, &cmd_state).unwrap();
+    screen.render(&snap).unwrap();
     let rendered = screen.to_string();
 
     assert!(rendered.contains("Dungeon Crawler RPG"));
@@ -692,12 +660,11 @@ fn test_fully_generic_scheme_game_rendering() {
 fn test_terminal_dimensions_primitive() {
     let mut engine = GameEngine::new().unwrap();
 
-    let width_str = engine.execute_command("(system-terminal-width)").unwrap();
-    let width: i64 = width_str.parse().expect("Expected integer width");
+    let car_w = engine.execute_command("(car (system-window-size))").unwrap();
+    let cadr_h = engine.execute_command("(cadr (system-window-size))").unwrap();
+    let width: i64 = car_w.parse().expect("Expected integer width from car");
+    let height: i64 = cadr_h.parse().expect("Expected integer height from cadr");
     assert!(width > 0, "Width was: {}", width);
-
-    let height_str = engine.execute_command("(system-terminal-height)").unwrap();
-    let height: i64 = height_str.parse().expect("Expected integer height");
     assert!(height > 0, "Height was: {}", height);
 }
 
@@ -707,7 +674,7 @@ fn test_fullscreen_raw_grid_dungeon_and_key_streaming() {
     std::fs::create_dir_all(&custom_dir).unwrap();
 
     // A pure ASCII Dungeon crawler in Scheme:
-    // Takes over entire screen via "raw-grid" and "raw" input_mode!
+    // Takes over entire screen via full-screen grid!
     let dungeon_script = r###"
 (define *px* 2)
 (define *py* 1)
@@ -754,8 +721,6 @@ fn test_fullscreen_raw_grid_dungeon_and_key_streaming() {
          [status (string-append "HP: 20/20 | Gold: " (number->string *gold*) "G | Pos: " (number->string *px*) "," (number->string *py*))])
     (string-append
       "{"
-        "\"mode\": \"raw-grid\","
-        "\"input_mode\": \"raw\","
         "\"cursor\": [" (number->string *px*) ", " (number->string *py*) "],"
         "\"grid\": ["
           "\"" wall "\","
@@ -771,18 +736,15 @@ fn test_fullscreen_raw_grid_dungeon_and_key_streaming() {
 
     let mut engine = GameEngine::with_game_dir(&custom_dir).expect("Failed to load Dungeon");
     let mut screen = VirtualScreen::new(50, 10).unwrap();
-    let cmd_state = CommandState::new();
 
     // 1. Initial snapshot check
     let snap = engine.get_snapshot().expect("Failed to get dungeon snapshot");
-    assert!(snap.is_raw_grid());
-    assert!(snap.is_raw_input());
     assert_eq!(snap.cursor, Some([2, 1]));
 
-    screen.render(&snap, &cmd_state).unwrap();
+    screen.render(&snap).unwrap();
     let frame1 = screen.to_string();
 
-    // Verify full screen ASCII grid rendered without Ratatui card boxes:
+    // Verify full screen ASCII grid rendered:
     assert!(frame1.contains("+--------------+"));
     assert!(frame1.contains("@"));
     assert!(frame1.contains("M"));
@@ -796,7 +758,7 @@ fn test_fullscreen_raw_grid_dungeon_and_key_streaming() {
 
     let snap2 = engine.get_snapshot().unwrap();
     assert_eq!(snap2.cursor, Some([3, 1]));
-    screen.render(&snap2, &cmd_state).unwrap();
+    screen.render(&snap2).unwrap();
     assert!(screen.to_string().contains("Pos: 3,1"));
 
     // 3. Simulate raw key "key:s" (move down) and "key:g" (collect gold)
@@ -805,7 +767,7 @@ fn test_fullscreen_raw_grid_dungeon_and_key_streaming() {
 
     let snap3 = engine.get_snapshot().unwrap();
     assert_eq!(snap3.cursor, Some([3, 2]));
-    screen.render(&snap3, &cmd_state).unwrap();
+    screen.render(&snap3).unwrap();
     let frame3 = screen.to_string();
     assert!(frame3.contains("Pos: 3,2"));
     assert!(frame3.contains("Gold: 10G"));

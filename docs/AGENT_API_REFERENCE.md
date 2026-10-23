@@ -74,8 +74,7 @@ CardCraft 采用**“窄腰沙漏（Narrow-Waist）”双核解耦架构**：
 | :--- | :--- | :--- | :--- |
 | `(system-log level msg)` | `String, String` | `#<void>` | 输出日志至终端标准错误。`level` 可为 `"INFO"`、`"WARN"`、`"ERROR"`。（兼容别名：`rust-log`） |
 | `(system-utils-random-int min max)` | `Integer, Integer` | `Integer` | 生成闭区间 `[min, max]` 的随机整数（基于硬件随机数发生器）。（兼容别名：`rust-random-int`） |
-| `(system-terminal-width)` | 无 | `Integer` | 获取当前物理终端视口的列宽（字符数，如 `80`）。 |
-| `(system-terminal-height)` | 无 | `Integer` | 获取当前物理终端视口的总行数（行数，如 `25`）。 |
+| `(system-window-size)` | 无 | `'(width height)` | 获取当前物理终端视口的宽高（字符列数与行数），返回二元列表。用 `(car (system-window-size))` 取得宽，`(cadr (system-window-size))` 取得高。（兼容别名：`system-terminal-width`, `system-terminal-height`） |
 | `(system-time-now)` | 无 | `Number` | 获取当前自 Unix 纪元起的高精度浮点秒数 (`f64`)，已合并原 `rust-millis`，用于高精度耗时与冷却判定。 |
 | `(system-file-write path content)` | `String, String` | `Boolean` | 将字符串写入 `<game_dir>/saves/<path>`。成功返回 `#true`，越界防护返回 `#false`。 |
 | `(system-file-read path)` | `String` | `String` | 从 `<game_dir>/saves/<path>` 读取文本内容。文件不存在或失败时返回 `""`。 |
@@ -152,101 +151,106 @@ CardCraft 采用**“窄腰沙漏（Narrow-Waist）”双核解耦架构**：
 
 ## 5. 快照视图 JSON 数据契约 (GameViewSnapshot Contract)
 
-`(game-render)` 导出的 JSON 会被 Rust 宿主反序列化为 `GameViewSnapshot`。引擎已实现**100% 动态泛化**，绝不强制绑定任何特定玩法概念（如月相、食物、金币或商店）。
+CardCraft 遵循**“全屏纯字符网格接管”**哲学：Scheme 拥有终端与画布的 **100% 渲染主权**。Rust 宿主端无任何固化的布局窗格或业务模板，仅将 `(game-render)` 返回的字符串网格逐行投影到物理终端或虚拟显存。
 
-### 5.1 通用游戏快照推荐格式 (Generic Schema)
-适用于任何卡牌、RPG、自走棋、策略或模拟经营游戏：
+### 5.1 全屏字符网格规范 (Full-Screen Canvas Schema)
+
+`(game-render)` 导出的 JSON 结构极为简洁纯粹：
 
 ```json
 {
-  "title": "Dungeon Crawler RPG",
-  "metrics": [
-    { "label": "HP", "value": "85/100", "color": "green" },
-    { "label": "FLOOR", "value": "B3", "color": "cyan" },
-    { "label": "GOLD", "value": "50G", "color": "yellow" }
-  ],
-  "stacks": [
-    {
-      "id": 1,
-      "cards": ["Warrior", "Excalibur"],
-      "progress": 0.5,
-      "total_time": 4.0,
-      "recipe_name": "Slash Attack",
-      "status": "Combat"
-    },
-    {
-      "id": 2,
-      "cards": ["GoblinKing"],
-      "progress": null,
-      "total_time": null,
-      "recipe_name": null,
-      "status": "Hostile"
-    }
-  ],
-  "panels": [
-    { "id": "atk", "name": "Attack" },
-    { "id": "cast", "name": "Cast Fireball", "cost": 10 }
-  ],
-  "panel_title": "Quick Actions",
-  "logs": [
-    "Encountered Goblin King on Floor B3!"
+  "cursor": [11, 8],
+  "grid": [
+    "+-- CardCraft Console ----------------------------------------+",
+    "| MOON 1 | [==........] 25s | Food: 2/1 | Gold: 5G | [RUNNING] |",
+    "+-- Board & Stacks ------------------------------------------+",
+    "| [ 2] BerryBush Villager [........] (4s / Harvest Berry)      |",
+    "| [ 3] Berry                                                  |",
+    "+-- Actions & Store -----------------------------------------+",
+    "| ACTIONS: [b basic] Basic Pack (3G)  |  [b food] Food Pack (5G) |",
+    "+-- Command Prompt [OK] --------------------------------------+",
+    "| Command: s 1 2                                              |",
+    "+-------------------------------------------------------------+"
   ]
 }
 ```
 
 ### 字段说明：
-- **`title`** (`Option<String>`): 顶栏窗口自定义游戏标题。
-- **`metrics`** (`Vec<MetricItem>`): 顶栏徽章列表，每项包含 `label`、`value` 和可选 `color`（`"red"`, `"green"`, `"yellow"`, `"cyan"`, `"magenta"`, `"blue"`）。由 Scheme 动态定义，无任何硬编码指标。
-- **`stacks`** (`Vec<StackView>`): 场上卡槽/实体列表，包含 `id`, `cards`, `progress`, `total_time`, `recipe_name`, `status`。
-- **`panels`** (`Vec<PanelItem>`，别名 `shop`): 可选操作栏/商店条目列表。若为空，宿主 TUI 自动自适应折叠该面板，让位给卡牌区。
-- **`logs`** (`Vec<String>`): 事件与聊天日志。
+- **`grid`** (`Vec<String>`): 字符行列表。从第 0 行自顶向下铺满视口。支持通过 `(system-window-size)` 动态获取终端宽度与高度进行响应式居中或排版。
+- **`cursor`** (`Option<[u16; 2]>`): 硬件物理光标位置 `[x, y]`（列与行坐标，0-indexed）。如果为 `null`，宿主自动隐藏物理光标。
 
-### 5.2 兼容支持格式 (Legacy Schema)
-若未提供 `metrics`，引擎自动兼容读取 `meta`（`moon`, `gold`, `food_current`, etc.）与 `shop`，确保原型脚本与单元测试无缝运行。
-- `meta.food_required`: `i32`，月末村民消耗的总食物点数。
-- `meta.card_count`: `i32`，场上卡牌总数。
-- `meta.card_limit`: `i32`，卡牌上限。
-- `meta.status`: `String`，游戏当前状态（`"Running"`、`"Paused"`、`"GameOver"` 等）。
-- `stacks`: 数组，每个元素包含：
-  - `id`: `i32`，卡栈槽位编号。
-  - `cards`: `Vec<String>`，卡栈内包含的卡牌名称列表（底端卡在前面，顶端卡在后面）。
-  - `progress`: `Option<f64>`，当前合成进度秒数（未合成时为 `null`）。
-  - `total_time`: `Option<f64>`，合成所需总秒数（未合成时为 `null`）。
-  - `recipe_name`: `Option<String>`，命中配方的名称（未合成时为 `null`）。
-  - `status`: `String`，卡栈状态，通常为 `"Idle"` 或 `"Crafting"`。
-- `shop`: 数组，商店卡包列表，包含 `id` (`String`)、`name` (`String`)、`cost` (`i32`)。
-- `logs`: 数组，最近系统/聊天事件日志，包含 `String`。
+### 5.2 轻量行内颜色高亮标签 (Inline Color Tags)
+在 `grid` 每一行中，Scheme 可以自由嵌入用方括号包围的色彩修饰标签，Rust 渲染器会自动解析并映射至 ANSI 色彩空间：
+- **前景色**：`[black]`, `[red]`, `[green]`, `[yellow]`, `[blue]`, `[magenta]`, `[cyan]`, `[white]`
+- **修饰符**：`[bold]`
+- **重置**：`[reset]`
 
----
-
-### 5.2 全屏纯字符网格模式 (Full-Screen Raw Grid Mode)
-适用于 **ASCII Roguelike、地牢探险、贪吃蛇、字符战棋** 等需要 100% 接管终端屏幕（包括输入与光标）的游戏：
-
-```json
-{
-  "mode": "raw-grid",
-  "input_mode": "raw",
-  "cursor": [12, 5],
-  "grid": [
-    "+--------------------------------------------------------------+",
-    "|.........[yellow]@[reset]...................[red]M[reset]................................|",
-    "|.................+--------------+.............................|",
-    "|.................|              |.............................|",
-    "+--------------------------------------------------------------+",
-    "HP: 100/100 | MP: 30/30 | Floor: 2F | [WASD: Move, G: Pick, Q: Quit]"
-  ]
-}
+示例：
+```scheme
+"|.........[yellow]@[reset]...................[red]GoblinKing[reset]..........|"
 ```
 
-#### 关键特性：
-1. **100% 屏幕自由度**：Rust 终端跳过所有预设窗格（Header/Board/Logs/Command Bar），将 `grid` 逐行 1:1 投射到终端，没有任何硬编码的边框与输入框。
-2. **彩色字符高亮标签**：支持在字符行中嵌入轻量颜色标签，例如 `[red]M[reset]`、`[yellow]@[reset]`、`[cyan]Score: 100[reset]`、`[bold]`。
-3. **硬件光标定位**：`"cursor": [x, y]` 将终端光标精准贴合到玩家坐标或打字位置；设置为 `null` 自动隐藏光标。
-4. **单键即时直通 (`input_mode: "raw"`)**：无需按回车，玩家按下任何键，Rust 毫秒级包装为 `key:w`、`key:up`、`key:enter` 并调用 Scheme 的 `(net-on-message! cid msg)`，支持连续走位与微操。
+---
+
+## 6. 统一硬件事件与网络分发流水线 (Unified Event Stream)
+
+所有键盘、鼠标、窗口大小变动与网络消息统一通过唯一的通用入口派发给 Scheme：
+
+```scheme
+(net-on-message! cid message-str)
+```
+
+### 6.1 本地终端事件 (cid = 0)
+- **按键事件**：前缀为 `"key:"`，包括：
+  - 功能键：`"key:enter"`, `"key:backspace"`, `"key:space"`, `"key:left"`, `"key:right"`, `"key:up"`, `"key:down"`, `"key:home"`, `"key:end"`
+  - 普通按键：`"key:a"`, `"key:1"`, `"key:w"`, `"key:s"` 等
+- **窗口大小变动事件**：前缀为 `"resize:"`，例如 `"resize:120x35"`（表示当前终端变更为 120 列 x 35 行）。
+- **鼠标事件**：前缀为 `"mouse:"`，例如 `"mouse:down:10,5"`, `"mouse:up:10,5"`, `"mouse:drag:12,5"`。
+
+### 6.2 远程网络客户端消息 (cid > 0)
+- 网络客户端（WebSocket、TCP、P2P）发送的文本命令，如 `"s 1 2"`, `"say Hello World"`, `"who"` 等。
+
+### 6.3 典型分发实现示例
+```scheme
+(define *tui-input-buffer* "")
+(define *tui-last-feedback* "Ready")
+
+(define (net-on-message! cid msg)
+  (cond
+    ;; 1. 本地键盘事件直通
+    [(starts-with? msg "key:")
+     (let ([k (substring msg 4 (string-length msg))])
+       (cond
+         [(equal? k "enter")
+          (let ([cmd *tui-input-buffer*])
+            (set! *tui-input-buffer* "")
+            (dispatch-command! cid cmd))]
+         [(equal? k "backspace")
+          (let ([len (string-length *tui-input-buffer*)])
+            (when (> len 0)
+              (set! *tui-input-buffer* (substring *tui-input-buffer* 0 (- len 1))))
+            "OK")]
+         [(equal? k "space")
+          (set! *tui-input-buffer* (string-append *tui-input-buffer* " "))
+          "OK"]
+         [(= (string-length k) 1)
+          (set! *tui-input-buffer* (string-append *tui-input-buffer* k))
+          "OK"]
+         [else "OK"]))]
+
+    ;; 2. 窗口重排事件
+    [(starts-with? msg "resize:") "OK"]
+
+    ;; 3. 鼠标交互事件
+    [(starts-with? msg "mouse:") "OK"]
+
+    ;; 4. 网络文本命令
+    [else (dispatch-command! cid msg)]))
+```
 
 ---
 
-## 6. 标准 CAD 命令行分发规范
+## 7. 标准 CAD 命令行分发规范
 
 建议游戏脚本支持以下简洁的动词缩写体系：
 

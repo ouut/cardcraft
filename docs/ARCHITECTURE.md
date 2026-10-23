@@ -24,38 +24,40 @@ CardCraft 旨在将《Stacklands》（堆叠大陆）的核心建造生存机制
 |                           RUST 宿主层 (Host Shell)                           |
 |                                                                             |
 |  +---------------------+   +---------------------+   +-------------------+  |
-|  | Crossterm Terminal  |   | CAD Command Manager |   | Fixed Tick Timer  |  |
-|  | (Raw Mode / Input)  |   | (History / Cursor)  |   | (100ms Event Loop)|  |
+|  | Crossterm Terminal  |   | Unified Event Loop  |   | Fixed Tick Timer  |  |
+|  | (Raw Mode / Stream) |   | (key/mouse/resize)  |   | (100ms Event Loop)|  |
 |  +----------+----------+   +----------+----------+   +---------+---------+  |
 |             |                         |                        |            |
 +-------------|-------------------------|------------------------|------------+
               |                         |                        |
-              | 键盘事件                | "s 1 2" CAD 指令       | dt = 0.1s
+              | 原始硬件输入直通         | "key:...", "s 1 2"     | dt = 0.1s
               v                         v                        v
 +-----------------------------------------------------------------------------+
 |                         狭窄接口层 (The Narrow Waist)                         |
 |                                                                             |
-|  * (game-input tokens)                                                       |
-|  * (game-update! dt)                                                         |
-|  * (game-render)            ===> Serde JSON Deserializer                     |
+|  * (net-on-message! cid msg)   <=== 统一键盘/鼠标/命令/聊天分发              |
+|  * (game-update! dt)           <=== 周期逻辑推进与倒计时                     |
+|  * (game-render)               ===> Serde JSON Deserializer (Grid+Cursor)   |
 +-----------------------------------------------------------------------------+
               ^                         |                        |
-              | 只读视图导出            | 状态变更               | 状态演进
+              | 全屏纯字符网格导出      | 状态变更               | 状态演进
               |                         v                        v
 +-------------+---------------------------------------------------------------+
 |                       STEEL SCHEME 逻辑引擎 (Guest Core)                    |
 |                                                                             |
+|  * Rendering Sovereignty: 100% 接管全屏字符网格、边框、状态栏与光标定位      |
+|  * Line Editing: *tui-input-buffer* 与 *tui-last-feedback* 行编辑状态机     |
 |  * World State: Moon, Gold, Card Limit, Stacks List                         |
 |  * Recipe Pattern Matcher: Multiset Subset Algorithm                        |
 |  * Action Primitives: stack, unstack, move, buy, open, sell, wait           |
 |  * Survival Cycle: Monthly food consumption & starvation check              |
 +-----------------------------------------------------------------------------+
                                         |
-                                        v 只读快照渲染
+                                        v 只读字符网格渲染 (grid + cursor)
 +-----------------------------------------------------------------------------+
 |                       HEADLESS 虚拟缓冲层 (Virtual Screen)                   |
 |                                                                             |
-|              GameViewSnapshot (Rust Semantic View-Model)                    |
+|              GameViewSnapshot (grid: Vec<String>, cursor: [x,y])             |
 |                                       │                                     |
 |                                       ▼                                     |
 |              Ratatui TestBackend (In-memory 2D Cell Grid)                   |
@@ -71,7 +73,7 @@ CardCraft 旨在将《Stacklands》（堆叠大陆）的核心建造生存机制
 ## 三、 模块职责与详细实现
 
 ### 1. Scheme 逻辑核心 (`scripts/core.scm`)
-Scheme 天然擅长处理嵌套列表与符号，非常适合做卡牌的栈操作。
+Scheme 天然擅长处理嵌套列表与符号，不仅完整承载游戏业务逻辑，更 100% 接管画面排版与用户交互：
 * **数据结构**：
   * **Card**：以字符串表示的原子名称（`"Villager"`, `"Wood"`）。
   * **Stack**：六元组列表 `(id cards progress total-time recipe-name status)`。
@@ -82,26 +84,31 @@ Scheme 天然擅长处理嵌套列表与符号，非常适合做卡牌的栈操�
 * **时间推进与生产结算 (`game-update!`)**：
   * 遍历各栈推进进度，达标后自动扣减原料卡（`multiset-diff`），并将产物（`rec-outputs`）通过 `spawn-card!` 自动弹出到新栈槽中。
   * 监测月末饥饿，自动遍历场上食物卡扣除。
+* **全屏字符网格排版 (`game-render`)**：
+  * 调用 `(system-window-size)` 自适应终端视口尺寸，使用 ASCII 字符组织顶栏、卡栈区、操作区、日志区与输入提示符。
+  * 序列化为 `{"cursor": [x, y], "grid": [...]}` JSON 导出给宿主。
 
 ### 2. Rust 宿主引擎封装 (`src/engine.rs`)
 * 嵌入 `steel_core::steel_vm::engine::Engine`。
 * 在初始化时直接将 `core.scm` 嵌入二进制静态编译（`include_str!`），保证零外部路径依赖。
+* **统一事件分发**：
+  * 本地按键包装为 `"key:<k>"`（如 `"key:enter"`, `"key:backspace"`, `"key:a"`）。
+  * 窗口重置包装为 `"resize:<w>x<h>"`，鼠标事件包装为 `"mouse:..."`。
+  * 全部统一流入 `(net-on-message! cid msg)` 进行路由。
 * **双模解析分发**：
-  * 普通文本（如 `s 1 2`）：拆解为 Token 列表，调用 `(game-input '("s" "1" "2"))`。
-  * 括号开头（如 `(spawn-card! "Apple")`）：作为 Scheme 代码直接在 VM 内动态求值（内置开发调试控制台）。
+  * 普通命令与聊天通过 Scheme 分发器执行。
+  * 括号开头（如 `(spawn-card! "Apple")`）：作为 Scheme 代码直接在 VM 内动态求值（God Mode）。
 
-### 3. CAD 交互控制状态机 (`src/cad.rs`)
-* 维护用户当前输入的缓冲区、光标逻辑位置（支持 `Left`、`Right`、`Home`、`End`）。
-* 维护历史命令栈，支持通过 `Up` / `Down` 键快速回溯执行过的指令。
-* 接收来自引擎的执行反馈（Feedback），实时更新在命令栏标题中。
+### 3. Scheme 端行编辑与 CAD 命令交互
+* 命令输入缓冲区（`*tui-input-buffer*`）与反馈状态（`*tui-last-feedback*`）完全由 Scheme 自身维护。
+* 接收来自 Rust 宿主的按键流，精准计算打字光标的物理坐标 `[cursor-x, cursor-y]`。
+* Rust 彻底摆脱对特定输入框、光标位置的硬编码维护。
 
 ### 4. 虚拟缓冲与解耦渲染 (`src/buffer.rs` & `src/render.rs`)
-* **`render_ui`**：采用声明式布局（Declarative Layout），将视图划分为：
-  * **顶部信息条**：月相周期、天数进度条、食物消耗对比、黄金储备、卡牌数量上限警告。
-  * **中央卡栈区**：每行一个独立卡槽，卡牌带 ANSI 专属色彩，右侧动态绘制 ASCII 进度条 `[====....]`。
-  * **商店与快捷键**：卡包价格与快捷指令。
-  * **日志区**：最近系统事件（生成物、交易、饥饿警告）。
-  * **底部命令栏**：输入文本行与交互硬件光标同步。
+* **`render_ui`**：
+  * 彻底移除所有业务模板与多面板分割计算，实现 100% 纯粹全屏网格字符投射。
+  * 支持解析轻量色彩标签（`[yellow]@[reset]`, `[red]`, `[cyan]`, `[bold]` 等）并转换为 ANSI 终端颜色。
+  * 依据 `snapshot.cursor` 设定终端物理硬件光标位置。
 * **`VirtualScreen`**：
   * 包装 Ratatui 的 `TestBackend`。
   * 提供 `to_string()` 方法，把纯内存 2D 字符网格按行提取为标准换行字符串，用于自动化测试与外部重定向。
