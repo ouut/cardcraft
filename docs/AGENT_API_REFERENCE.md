@@ -179,15 +179,21 @@ CardCraft 遵循**“全屏纯字符网格接管”**哲学：Scheme 拥有终�
 - **`grid`** (`Vec<String>`): 字符行列表。从第 0 行自顶向下铺满视口。支持通过 `(system-window-size)` 动态获取终端宽度与高度进行响应式居中或排版。
 - **`cursor`** (`Option<[u16; 2]>`): 硬件物理光标位置 `[x, y]`（列与行坐标，0-indexed）。如果为 `null`，宿主自动隐藏物理光标。
 
-### 5.2 轻量行内颜色高亮标签 (Inline Color Tags)
-在 `grid` 每一行中，Scheme 可以自由嵌入用方括号包围的色彩修饰标签，Rust 渲染器会自动解析并映射至 ANSI 色彩空间：
-- **前景色**：`[black]`, `[red]`, `[green]`, `[yellow]`, `[blue]`, `[magenta]`, `[cyan]`, `[white]`
-- **修饰符**：`[bold]`
-- **重置**：`[reset]`
+### 5.2 标准 ANSI 转义字符着色支持 (Standard ANSI Styling)
+Scheme 拥有 100% 样式主权，可自由使用国际标准的 ANSI 转义序列（VT100 规范），Rust 仅作为中立管道进行标准解析与流转发，没有任何私有标签：
+- **前景色**：`\x1b;[31m` (红), `\x1b;[32m` (绿), `\x1b;[33m` (黄), `\x1b;[34m` (蓝), `\x1b;[35m` (品红), `\x1b;[36m` (青), `\x1b;[37m` (白)
+- **高级色彩**：支持 256 色（`\x1b;[38;5;<n>m`）与 24 位真彩色（RGB：`\x1b;[38;2;<r>;<g>;<b>m`）
+- **文字修饰**：`\x1b;[1m` (加粗), `\x1b;[4m` (下划线)
+- **重置样式**：`\x1b;[0m`
 
 示例：
 ```scheme
-"|.........[yellow]@[reset]...................[red]GoblinKing[reset]..........|"
+(define ANSI-YELLOW "\x1b;[33m")
+(define ANSI-RED "\x1b;[31m")
+(define ANSI-RESET "\x1b;[0m")
+
+;; Scheme 自由排版彩色地牢符号
+(string-append "|........." ANSI-YELLOW "@" ANSI-RESET "..................." ANSI-RED "GoblinKing" ANSI-RESET "..........|")
 ```
 
 ---

@@ -266,7 +266,13 @@ impl GameEngine {
             return self.eval_raw(trimmed);
         }
 
-        // CAD command mode
+        // Single entry point via net-on-message! for unified routing,
+        // falling back to game-input for minimal test scripts.
+        if let Ok(res) = self.net_message(0, trimmed) {
+            return Ok(res);
+        }
+
+        // CAD command mode fallback
         let tokens: Vec<&str> = trimmed.split_whitespace().collect();
         let tokens_str = tokens.iter()
             .map(|t| format!("\"{}\"", t.replace('\"', "\\\"")))

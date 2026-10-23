@@ -710,13 +710,13 @@ fn test_fullscreen_raw_grid_dungeon_and_key_streaming() {
 (define (game-render)
   (let* ([wall "+--------------+"]
          [row1 (if (= *py* 1)
-                   (string-append "|" (make-string (- *px* 1) #\.) "[yellow]@[reset]" (make-string (- 14 *px*) #\.) "|")
+                   (string-append "|" (make-string (- *px* 1) #\.) "\\u001b[33m@\\u001b[0m" (make-string (- 14 *px*) #\.) "|")
                    "|..............|")]
          [row2 (if (= *py* 2)
-                   (string-append "|" (make-string (- *px* 1) #\.) "[yellow]@[reset]" (make-string (- 14 *px*) #\.) "|")
-                   "|.......[red]M[reset]......|")]
+                   (string-append "|" (make-string (- *px* 1) #\.) "\\u001b[33m@\\u001b[0m" (make-string (- 14 *px*) #\.) "|")
+                   "|.......\\u001b[31mM\\u001b[0m......|")]
          [row3 (if (= *py* 3)
-                   (string-append "|" (make-string (- *px* 1) #\.) "[yellow]@[reset]" (make-string (- 14 *px*) #\.) "|")
+                   (string-append "|" (make-string (- *px* 1) #\.) "\\u001b[33m@\\u001b[0m" (make-string (- 14 *px*) #\.) "|")
                    "|..............|")]
          [status (string-append "HP: 20/20 | Gold: " (number->string *gold*) "G | Pos: " (number->string *px*) "," (number->string *py*))])
     (string-append

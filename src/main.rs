@@ -292,6 +292,7 @@ async fn run_event_loop(
                     }
 
                     let key_msg = match key.code {
+                        KeyCode::Char(' ') => "key:space".to_string(),
                         KeyCode::Char(c) => {
                             if key.modifiers.contains(KeyModifiers::CONTROL) {
                                 format!("key:ctrl+{}", c)

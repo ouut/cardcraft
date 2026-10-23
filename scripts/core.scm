@@ -529,6 +529,8 @@
               [(char=? ch #\\) (loop (+ i 1) (cons #\\ (cons #\\ acc)))]
               [(char=? ch #\") (loop (+ i 1) (cons #\" (cons #\\ acc)))]
               [(char=? ch #\newline) (loop (+ i 1) (cons #\n (cons #\\ acc)))]
+              [(char=? ch (integer->char 27))
+               (loop (+ i 1) (cons #\b (cons #\1 (cons #\0 (cons #\0 (cons #\u (cons #\\ acc)))))))]
               [else (loop (+ i 1) (cons ch acc))]))))))
 
 ;; Export full-screen character canvas as JSON
@@ -703,8 +705,9 @@
                    (add-log! (string-append "[" name "]: " chat-text))
                    "OK"))]
 
-            ;; 3. Whisper / Private Message: w <target> <text...> or tell <target> <text...>
-            [(or (equal? verb "w") (equal? verb "tell") (equal? verb "whisper"))
+            ;; 3. Whisper / Private Message: whisper <target> <text...> or tell <target> <text...> or w <username> (when not a number)
+            [(or (equal? verb "tell") (equal? verb "whisper")
+                 (and (equal? verb "w") (not (null? args)) (not (string->number (car args)))))
              (if (< (length args) 2)
                  (begin
                    (system-net-send! cid "Usage: w <username> <message...>")
@@ -758,7 +761,7 @@
          [(equal? k "space")
           (set! *tui-input-buffer* (string-append *tui-input-buffer* " "))
           "OK"]
-         [(and (= (string-length k) 1))
+         [(= (string-length k) 1)
           (set! *tui-input-buffer* (string-append *tui-input-buffer* k))
           "OK"]
          [else "OK"]))]
