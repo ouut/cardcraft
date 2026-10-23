@@ -73,6 +73,22 @@ fn default_running_status() -> String {
 /// Completely generic, decoupled Game View Snapshot
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct GameViewSnapshot {
+    /// Rendering mode: "snapshot" (default, structured panels) or "raw-grid" / "grid" (full-screen character matrix)
+    #[serde(default)]
+    pub mode: Option<String>,
+
+    /// Input mode: "line" (default, line-buffered command bar) or "raw" (immediate key event streaming)
+    #[serde(default)]
+    pub input_mode: Option<String>,
+
+    /// Full-screen character grid (used when mode == "raw-grid" or if grid is present)
+    #[serde(alias = "lines", alias = "screen", default)]
+    pub grid: Option<Vec<String>>,
+
+    /// Optional hardware cursor position [x, y] in full-screen grid mode
+    #[serde(default)]
+    pub cursor: Option<[u16; 2]>,
+
     /// Custom game title for the top window banner
     #[serde(default)]
     pub title: Option<String>,
@@ -103,6 +119,18 @@ pub struct GameViewSnapshot {
 }
 
 impl GameViewSnapshot {
+    /// Check if snapshot is configured for full-screen raw character grid rendering
+    pub fn is_raw_grid(&self) -> bool {
+        self.mode.as_deref() == Some("raw-grid")
+            || self.mode.as_deref() == Some("grid")
+            || (self.grid.is_some() && self.stacks.is_empty() && self.panels.is_empty())
+    }
+
+    /// Check if snapshot requests raw immediate key event streaming
+    pub fn is_raw_input(&self) -> bool {
+        self.input_mode.as_deref() == Some("raw") || self.is_raw_grid()
+    }
+
     /// Backward-compatibility accessor for snapshot.shop
     pub fn shop(&self) -> &[PanelItem] {
         &self.panels

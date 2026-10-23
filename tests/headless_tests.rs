@@ -688,4 +688,129 @@ fn test_fully_generic_scheme_game_rendering() {
     std::fs::remove_dir_all(&custom_dir).ok();
 }
 
+#[test]
+fn test_terminal_dimensions_primitive() {
+    let mut engine = GameEngine::new().unwrap();
+
+    let width_str = engine.execute_command("(system-terminal-width)").unwrap();
+    let width: i64 = width_str.parse().expect("Expected integer width");
+    assert!(width > 0, "Width was: {}", width);
+
+    let height_str = engine.execute_command("(system-terminal-height)").unwrap();
+    let height: i64 = height_str.parse().expect("Expected integer height");
+    assert!(height > 0, "Height was: {}", height);
+}
+
+#[test]
+fn test_fullscreen_raw_grid_dungeon_and_key_streaming() {
+    let custom_dir = std::env::temp_dir().join(format!("cardcraft_dungeon_{}", rand::random::<u32>()));
+    std::fs::create_dir_all(&custom_dir).unwrap();
+
+    // A pure ASCII Dungeon crawler in Scheme:
+    // Takes over entire screen via "raw-grid" and "raw" input_mode!
+    let dungeon_script = r###"
+(define *px* 2)
+(define *py* 1)
+(define *gold* 0)
+
+(define (game-start!) #t)
+(define (game-update! dt) #t)
+
+;; Key routing in Scheme
+(define (starts-with? str prefix)
+  (let ([plen (string-length prefix)]
+        [slen (string-length str)])
+    (and (>= slen plen)
+         (equal? (substring str 0 plen) prefix))))
+
+(define (handle-key! k)
+  (cond
+    [(equal? k "w") (set! *py* (max 1 (- *py* 1)))]
+    [(equal? k "s") (set! *py* (min 3 (+ *py* 1)))]
+    [(equal? k "a") (set! *px* (max 1 (- *px* 1)))]
+    [(equal? k "d") (set! *px* (min 14 (+ *px* 1)))]
+    [(equal? k "g") (set! *gold* (+ *gold* 10))]
+    [else #f]))
+
+(define (net-on-message! cid msg)
+  (if (starts-with? msg "key:")
+      (begin
+        (handle-key! (substring msg 4 (string-length msg)))
+        "Key processed")
+      "Command ignored"))
+
+;; Render pure full-screen 2D ASCII grid
+(define (game-render)
+  (let* ([wall "+--------------+"]
+         [row1 (if (= *py* 1)
+                   (string-append "|" (make-string (- *px* 1) #\.) "[yellow]@[reset]" (make-string (- 14 *px*) #\.) "|")
+                   "|..............|")]
+         [row2 (if (= *py* 2)
+                   (string-append "|" (make-string (- *px* 1) #\.) "[yellow]@[reset]" (make-string (- 14 *px*) #\.) "|")
+                   "|.......[red]M[reset]......|")]
+         [row3 (if (= *py* 3)
+                   (string-append "|" (make-string (- *px* 1) #\.) "[yellow]@[reset]" (make-string (- 14 *px*) #\.) "|")
+                   "|..............|")]
+         [status (string-append "HP: 20/20 | Gold: " (number->string *gold*) "G | Pos: " (number->string *px*) "," (number->string *py*))])
+    (string-append
+      "{"
+        "\"mode\": \"raw-grid\","
+        "\"input_mode\": \"raw\","
+        "\"cursor\": [" (number->string *px*) ", " (number->string *py*) "],"
+        "\"grid\": ["
+          "\"" wall "\","
+          "\"" row1 "\","
+          "\"" row2 "\","
+          "\"" row3 "\","
+          "\"" wall "\","
+          "\"" status "\""
+        "]"
+      "}")))
+"###;
+    std::fs::write(custom_dir.join("core.scm"), dungeon_script).unwrap();
+
+    let mut engine = GameEngine::with_game_dir(&custom_dir).expect("Failed to load Dungeon");
+    let mut screen = VirtualScreen::new(50, 10).unwrap();
+    let cmd_state = CommandState::new();
+
+    // 1. Initial snapshot check
+    let snap = engine.get_snapshot().expect("Failed to get dungeon snapshot");
+    assert!(snap.is_raw_grid());
+    assert!(snap.is_raw_input());
+    assert_eq!(snap.cursor, Some([2, 1]));
+
+    screen.render(&snap, &cmd_state).unwrap();
+    let frame1 = screen.to_string();
+
+    // Verify full screen ASCII grid rendered without Ratatui card boxes:
+    assert!(frame1.contains("+--------------+"));
+    assert!(frame1.contains("@"));
+    assert!(frame1.contains("M"));
+    assert!(frame1.contains("Gold: 0G"));
+    assert!(!frame1.contains("Board & Slots"));
+    assert!(!frame1.contains("Command:"));
+
+    // 2. Simulate raw key "key:d" (move right)
+    let reply = engine.net_message(0, "key:d").unwrap();
+    assert_eq!(reply, "Key processed");
+
+    let snap2 = engine.get_snapshot().unwrap();
+    assert_eq!(snap2.cursor, Some([3, 1]));
+    screen.render(&snap2, &cmd_state).unwrap();
+    assert!(screen.to_string().contains("Pos: 3,1"));
+
+    // 3. Simulate raw key "key:s" (move down) and "key:g" (collect gold)
+    engine.net_message(0, "key:s").unwrap();
+    engine.net_message(0, "key:g").unwrap();
+
+    let snap3 = engine.get_snapshot().unwrap();
+    assert_eq!(snap3.cursor, Some([3, 2]));
+    screen.render(&snap3, &cmd_state).unwrap();
+    let frame3 = screen.to_string();
+    assert!(frame3.contains("Pos: 3,2"));
+    assert!(frame3.contains("Gold: 10G"));
+
+    std::fs::remove_dir_all(&custom_dir).ok();
+}
+
 

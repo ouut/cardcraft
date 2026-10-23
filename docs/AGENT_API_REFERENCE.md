@@ -74,6 +74,8 @@ CardCraft 采用**“窄腰沙漏（Narrow-Waist）”双核解耦架构**：
 | :--- | :--- | :--- | :--- |
 | `(system-log level msg)` | `String, String` | `#<void>` | 输出日志至终端标准错误。`level` 可为 `"INFO"`、`"WARN"`、`"ERROR"`。（兼容别名：`rust-log`） |
 | `(system-utils-random-int min max)` | `Integer, Integer` | `Integer` | 生成闭区间 `[min, max]` 的随机整数（基于硬件随机数发生器）。（兼容别名：`rust-random-int`） |
+| `(system-terminal-width)` | 无 | `Integer` | 获取当前物理终端视口的列宽（字符数，如 `80`）。 |
+| `(system-terminal-height)` | 无 | `Integer` | 获取当前物理终端视口的总行数（行数，如 `25`）。 |
 | `(system-time-now)` | 无 | `Number` | 获取当前自 Unix 纪元起的高精度浮点秒数 (`f64`)，已合并原 `rust-millis`，用于高精度耗时与冷却判定。 |
 | `(system-file-write path content)` | `String, String` | `Boolean` | 将字符串写入 `<game_dir>/saves/<path>`。成功返回 `#true`，越界防护返回 `#false`。 |
 | `(system-file-read path)` | `String` | `String` | 从 `<game_dir>/saves/<path>` 读取文本内容。文件不存在或失败时返回 `""`。 |
@@ -214,6 +216,33 @@ CardCraft 采用**“窄腰沙漏（Narrow-Waist）”双核解耦架构**：
   - `status`: `String`，卡栈状态，通常为 `"Idle"` 或 `"Crafting"`。
 - `shop`: 数组，商店卡包列表，包含 `id` (`String`)、`name` (`String`)、`cost` (`i32`)。
 - `logs`: 数组，最近系统/聊天事件日志，包含 `String`。
+
+---
+
+### 5.2 全屏纯字符网格模式 (Full-Screen Raw Grid Mode)
+适用于 **ASCII Roguelike、地牢探险、贪吃蛇、字符战棋** 等需要 100% 接管终端屏幕（包括输入与光标）的游戏：
+
+```json
+{
+  "mode": "raw-grid",
+  "input_mode": "raw",
+  "cursor": [12, 5],
+  "grid": [
+    "+--------------------------------------------------------------+",
+    "|.........[yellow]@[reset]...................[red]M[reset]................................|",
+    "|.................+--------------+.............................|",
+    "|.................|              |.............................|",
+    "+--------------------------------------------------------------+",
+    "HP: 100/100 | MP: 30/30 | Floor: 2F | [WASD: Move, G: Pick, Q: Quit]"
+  ]
+}
+```
+
+#### 关键特性：
+1. **100% 屏幕自由度**：Rust 终端跳过所有预设窗格（Header/Board/Logs/Command Bar），将 `grid` 逐行 1:1 投射到终端，没有任何硬编码的边框与输入框。
+2. **彩色字符高亮标签**：支持在字符行中嵌入轻量颜色标签，例如 `[red]M[reset]`、`[yellow]@[reset]`、`[cyan]Score: 100[reset]`、`[bold]`。
+3. **硬件光标定位**：`"cursor": [x, y]` 将终端光标精准贴合到玩家坐标或打字位置；设置为 `null` 自动隐藏光标。
+4. **单键即时直通 (`input_mode: "raw"`)**：无需按回车，玩家按下任何键，Rust 毫秒级包装为 `key:w`、`key:up`、`key:enter` 并调用 Scheme 的 `(net-on-message! cid msg)`，支持连续走位与微操。
 
 ---
 

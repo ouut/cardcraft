@@ -72,7 +72,7 @@ impl GameEngine {
         });
 
         // =========================================================================
-        // System Utilities (Random numbers, etc.)
+        // System Utilities (Random numbers, terminal dimensions, etc.)
         // =========================================================================
         vm.register_fn("system-utils-random-int", |min: i64, max: i64| -> i64 {
             if min >= max {
@@ -86,6 +86,13 @@ impl GameEngine {
                 return min;
             }
             rand::random_range(min..=max)
+        });
+
+        vm.register_fn("system-terminal-width", || -> i64 {
+            crossterm::terminal::size().map(|(w, _)| w as i64).unwrap_or(80)
+        });
+        vm.register_fn("system-terminal-height", || -> i64 {
+            crossterm::terminal::size().map(|(_, h)| h as i64).unwrap_or(25)
         });
 
         // =========================================================================

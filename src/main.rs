@@ -275,61 +275,115 @@ async fn run_event_loop(
 
     loop {
         // Draw frame from EngineHandle
-        if let Some(snapshot) = handle.get_snapshot_view().await {
+        let snapshot_opt = handle.get_snapshot_view().await;
+        if let Some(ref snapshot) = snapshot_opt {
             terminal.draw(|f| {
-                render_ui(f, &snapshot, &cmd_state);
+                render_ui(f, snapshot, &cmd_state);
             })?;
         }
 
+        let is_raw_mode = snapshot_opt.as_ref().map(|s| s.is_raw_input()).unwrap_or(false);
+
         // Poll keyboard event non-blockingly
         if event::poll(tick_interval)? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind != KeyEventKind::Press {
-                    continue;
-                }
+            match event::read()? {
+                Event::Key(key) => {
+                    if key.kind != KeyEventKind::Press {
+                        continue;
+                    }
 
-                if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-                    break;
-                }
+                    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+                        break;
+                    }
 
-                match key.code {
-                    KeyCode::Char(c) => {
-                        cmd_state.insert_char(c);
-                    }
-                    KeyCode::Backspace => {
-                        cmd_state.delete_backspace();
-                    }
-                    KeyCode::Delete => {
-                        cmd_state.delete_char();
-                    }
-                    KeyCode::Left => {
-                        cmd_state.move_cursor_left();
-                    }
-                    KeyCode::Right => {
-                        cmd_state.move_cursor_right();
-                    }
-                    KeyCode::Home => {
-                        cmd_state.move_cursor_home();
-                    }
-                    KeyCode::End => {
-                        cmd_state.move_cursor_end();
-                    }
-                    KeyCode::Up => {
-                        cmd_state.history_up();
-                    }
-                    KeyCode::Down => {
-                        cmd_state.history_down();
-                    }
-                    KeyCode::Enter => {
-                        let cmd = cmd_state.submit();
-                        if cmd == "q" || cmd == "quit" || cmd == "exit" {
-                            break;
+                    if is_raw_mode {
+                        let key_msg = match key.code {
+                            KeyCode::Char(c) => {
+                                if key.modifiers.contains(KeyModifiers::CONTROL) {
+                                    format!("key:ctrl+{}", c)
+                                } else {
+                                    format!("key:{}", c)
+                                }
+                            }
+                            KeyCode::Up => "key:up".to_string(),
+                            KeyCode::Down => "key:down".to_string(),
+                            KeyCode::Left => "key:left".to_string(),
+                            KeyCode::Right => "key:right".to_string(),
+                            KeyCode::Enter => "key:enter".to_string(),
+                            KeyCode::Backspace => "key:backspace".to_string(),
+                            KeyCode::Delete => "key:delete".to_string(),
+                            KeyCode::Esc => "key:esc".to_string(),
+                            KeyCode::Tab => "key:tab".to_string(),
+                            KeyCode::Home => "key:home".to_string(),
+                            KeyCode::End => "key:end".to_string(),
+                            KeyCode::PageUp => "key:pageup".to_string(),
+                            KeyCode::PageDown => "key:pagedown".to_string(),
+                            KeyCode::F(n) => format!("key:f{}", n),
+                            _ => continue,
+                        };
+                        handle.message(0, key_msg).await;
+                    } else {
+                        match key.code {
+                            KeyCode::Char(c) => {
+                                cmd_state.insert_char(c);
+                            }
+                            KeyCode::Backspace => {
+                                cmd_state.delete_backspace();
+                            }
+                            KeyCode::Delete => {
+                                cmd_state.delete_char();
+                            }
+                            KeyCode::Left => {
+                                cmd_state.move_cursor_left();
+                            }
+                            KeyCode::Right => {
+                                cmd_state.move_cursor_right();
+                            }
+                            KeyCode::Home => {
+                                cmd_state.move_cursor_home();
+                            }
+                            KeyCode::End => {
+                                cmd_state.move_cursor_end();
+                            }
+                            KeyCode::Up => {
+                                cmd_state.history_up();
+                            }
+                            KeyCode::Down => {
+                                cmd_state.history_down();
+                            }
+                            KeyCode::Enter => {
+                                let cmd = cmd_state.submit();
+                                if cmd == "q" || cmd == "quit" || cmd == "exit" {
+                                    break;
+                                }
+                                let (feedback, _) = handle.message(0, cmd).await;
+                                cmd_state.set_feedback(feedback);
+                            }
+                            _ => {}
                         }
-                        let (feedback, _) = handle.message(0, cmd).await;
-                        cmd_state.set_feedback(feedback);
                     }
-                    _ => {}
                 }
+                Event::Mouse(mouse) => {
+                    if is_raw_mode {
+                        let kind_str = match mouse.kind {
+                            crossterm::event::MouseEventKind::Down(btn) => format!("down:{:?}", btn).to_lowercase(),
+                            crossterm::event::MouseEventKind::Up(btn) => format!("up:{:?}", btn).to_lowercase(),
+                            crossterm::event::MouseEventKind::Drag(btn) => format!("drag:{:?}", btn).to_lowercase(),
+                            crossterm::event::MouseEventKind::Moved => "move".to_string(),
+                            crossterm::event::MouseEventKind::ScrollDown => "scrolldown".to_string(),
+                            crossterm::event::MouseEventKind::ScrollUp => "scrollup".to_string(),
+                            _ => "other".to_string(),
+                        };
+                        let mouse_msg = format!("mouse:{}:{}:{}", kind_str, mouse.column, mouse.row);
+                        handle.message(0, mouse_msg).await;
+                    }
+                }
+                Event::Resize(cols, rows) => {
+                    if is_raw_mode {
+                        handle.message(0, format!("resize:{}:{}", cols, rows)).await;
+                    }
+                }
+                _ => {}
             }
         }
     }
