@@ -144,7 +144,7 @@ sequenceDiagram
 
 ## 七、 多协议并发服务与 Actor 桥接架构 (Multi-Protocol & Actor Bridge)
 
-为了在支持多客户端（终端 TUI、单端口 Web/WebSocket、裸 TCP 命令行、Iroh P2P QUIC）高并发访问的同时，保障非线程安全（`!Send`）的 Steel Scheme 虚拟机的内存与执行安全，CardCraft 引入了 **Actor 并发模型**：
+为了在支持多客户端（本地终端 TUI、单端口 Web/WebSocket、裸 TCP 命令行、Iroh P2P QUIC）高并发访问的同时，保障非线程安全（`!Send`）的 Steel Scheme 虚拟机的内存与执行安全，CardCraft 引入了 **“中枢权威 + 全端平权” Actor 并发模型**：
 
 ```
 +-------------------------------------------------------------------------+
@@ -157,21 +157,24 @@ sequenceDiagram
                   +-------------------------------------+
                   |      EngineHandle (Send + Sync)     |
                   +-------------------------------------+
-                     /               |               \
-                    v                v                v
-       +-----------------+  +-----------------+  +-----------------+
-       |   WebSocket     |  |   TCP Socket    |  |   Iroh P2P      |
-       |  (Hybrid Port)  |  |  (Line-based)   |  |  (QUIC Stream)  |
-       +--------+--------+  +--------+--------+  +--------+--------+
-                |                    |                    |
-                v                    v                    v
-          [Web 浏览器]          [nc/脚本客户端]       [远端 P2P Peer]
+                     /          |              |          \
+                    v           v              v           v
+       +----------------+ +------------+ +------------+ +------------+
+       |   Local TUI    | | WebSocket  | | TCP Socket | |  Iroh P2P  |
+       | (Crossterm)    | | (Port 8080)| | (Port 9000)| |(QUIC Tunnel)
+       +--------+-------+ +-----+------+ +-----+------+ +-----+------+
+                |               |              |              |
+                v               v              v              v
+          [本地终端屏幕]    [Web 浏览器]   [nc/自动化脚本]  [远端 P2P Peer]
 ```
 
-### 1. 单端口 HTTP 网页与 WebSocket 复用技术
-- 监听单一端口（如 8080），通过对握手数据包的特征检测（嗅探 `Upgrade: websocket` 请求头），实现普通 HTTP GET 请求自动返回静态页面，而 WebSocket 请求自动升级为实时全双工流。
+### 1. 本地 TUI 完全平权化
+本地 TUI 彻底从同步直接持有 `GameEngine` 解耦，同样通过轻量级异步 `EngineHandle` 接收状态快照与提交 CAD 命令。因此，无论本地终端在操作、还是网页端玩家在操作，底层状态均实时同步。
 
-### 2. P2P 本地桥接网络（Local P2P Web/TCP Bridge）
+### 2. 单端口 HTTP 网页与 WebSocket 复用技术
+- 监听单一端口（默认 8080），通过对握手数据包的特征检测（嗅探 `Upgrade: websocket` 请求头），实现普通 HTTP GET 请求自动返回静态页面，而 WebSocket 请求自动升级为实时全双工流。
+
+### 3. P2P 本地桥接网络（Local P2P Web/TCP Bridge）
 - 浏览器由于沙盒安全限制无法直接创建原生 UDP/QUIC 连接。CardCraft 客户端在运行 `cardcraft join <ticket>` 时，本地进程充当 **P2P 协议网关**，将本地 `ws://localhost:8080` 的请求透明封装并通过 Iroh QUIC 隧道转发至 Host，彻底打通第三方富前端。
 
 ---
@@ -179,7 +182,7 @@ sequenceDiagram
 ## 八、 测试与质量保障策略
 
 * **纯无头自动化测试（Zero-Headless CI）**：
-  * `tests/headless_tests.rs` 包含 19 个端到端测试用例，覆盖全部基础玩法、Scheme 注入原语、沙盒安全、TCP/Web 服务以及 P2P 桥接全链路闭环验证。
+  * `tests/headless_tests.rs` 包含 20 个端到端测试用例，覆盖全部基础玩法、Scheme 注入原语、沙盒安全、泛化视图、TCP/Web 服务以及 P2P 桥接全链路闭环验证。
 * **内存隔离**：
   * 游戏实体对象生命周期完全受 Scheme 垃圾回收管理，Rust 层只读取无状态的 JSON 快照，从根源杜绝悬垂指针与内存泄露。
 

@@ -61,6 +61,11 @@ impl EngineHandle {
         }
     }
 
+    pub async fn get_snapshot_view(&self) -> Option<crate::view::GameViewSnapshot> {
+        let json_str = self.get_snapshot().await?;
+        serde_json::from_str(&json_str).ok()
+    }
+
     pub async fn disconnect(&self, client_id: isize) {
         self.tx.send(EngineCommand::Disconnect { client_id }).await.ok();
     }
@@ -81,7 +86,12 @@ pub fn spawn_engine_actor(mut engine: GameEngine) -> (EngineHandle, tokio::task:
                     engine.net_connect(client_id).ok();
                 }
                 EngineCommand::Message { client_id, text, reply } => {
-                    let resp = engine.net_message(client_id, &text).unwrap_or_else(|e| format!("Error: {:?}", e));
+                    let trimmed = text.trim();
+                    let resp = if client_id == 0 && trimmed.starts_with('(') {
+                        engine.eval_raw(trimmed).unwrap_or_else(|e| format!("Error: {:?}", e))
+                    } else {
+                        engine.net_message(client_id, trimmed).unwrap_or_else(|e| format!("Error: {:?}", e))
+                    };
                     let snap_json = engine.get_snapshot().ok().and_then(|s| serde_json::to_string(&s).ok());
                     reply.send((resp, snap_json)).ok();
                 }

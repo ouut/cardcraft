@@ -1,6 +1,6 @@
 use std::io::stdout;
-use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::Context;
 use crossterm::{
@@ -28,6 +28,10 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    if args.iter().any(|arg| arg == "--test") {
+        return run_self_test();
+    }
+
     // 1. Parse game dir (-g / --game)
     let game_dir = if let Some(pos) = args.iter().position(|a| a == "-g" || a == "--game") {
         args.get(pos + 1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
@@ -35,357 +39,221 @@ fn main() -> anyhow::Result<()> {
         PathBuf::from(".")
     };
 
-    // 2. Parse web dir (--serve / --web-dir)
+    // 2. Parse web dir:
+    // If explicitly provided via --serve / --web-dir, use it.
+    // Otherwise check <game_dir>/web, fallback to ./web
     let web_dir = if let Some(pos) = args.iter().position(|a| a == "--serve" || a == "--web-dir") {
         args.get(pos + 1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("web"))
     } else {
-        PathBuf::from("web")
-    };
-
-    // 3. Parse WS port (--ws [PORT])
-    let ws_port = if let Some(pos) = args.iter().position(|a| a == "--ws" || a == "--ws-server") {
-        let p = args.get(pos + 1).and_then(|s| s.parse::<u16>().ok()).unwrap_or(8080);
-        Some(p)
-    } else {
-        None
-    };
-
-    // 4. Parse TCP port (--tcp [PORT])
-    let tcp_port = if let Some(pos) = args.iter().position(|a| a == "--tcp" || a == "--tcp-server") {
-        let p = args.get(pos + 1).and_then(|s| s.parse::<u16>().ok()).unwrap_or(9000);
-        Some(p)
-    } else {
-        None
-    };
-
-    // 1. P2P Host mode
-    if args.iter().any(|arg| arg == "--p2p-host" || arg == "host") {
-        return run_p2p_host(&game_dir, ws_port, tcp_port, web_dir);
-    }
-
-    // 2. P2P Join mode
-    if let Some(pos) = args.iter().position(|arg| arg == "--p2p-join" || arg == "join") {
-        if let Some(ticket) = args.get(pos + 1) {
-            return run_p2p_join(ticket, ws_port, tcp_port, web_dir);
+        let game_web = game_dir.join("web");
+        if game_web.is_dir() {
+            game_web
         } else {
-            eprintln!("Usage: cardcraft join <ticket> [--ws [PORT]] [--tcp [PORT]] [--serve <DIR>]");
+            PathBuf::from("web")
+        }
+    };
+
+    // 3. Parse port overrides
+    let ws_port = if let Some(pos) = args.iter().position(|a| a == "--ws" || a == "--ws-port") {
+        args.get(pos + 1).and_then(|s| s.parse::<u16>().ok()).unwrap_or(8080)
+    } else {
+        8080
+    };
+
+    let tcp_port = if let Some(pos) = args.iter().position(|a| a == "--tcp" || a == "--tcp-port") {
+        args.get(pos + 1).and_then(|s| s.parse::<u16>().ok()).unwrap_or(9000)
+    } else {
+        9000
+    };
+
+    // 4. Feature toggles (Opt-out)
+    let no_net = args.iter().any(|a| a == "--no-net");
+    let no_tui = args.iter().any(|a| a == "--no-tui" || a == "--headless");
+    let no_ws = no_net || args.iter().any(|a| a == "--no-ws");
+    let no_tcp = no_net || args.iter().any(|a| a == "--no-tcp");
+    let no_p2p = no_net || args.iter().any(|a| a == "--no-p2p");
+
+    // 5. P2P Join mode: join <TICKET>
+    if let Some(pos) = args.iter().position(|arg| arg == "join" || arg == "--p2p-join" || arg == "--join") {
+        if let Some(ticket) = args.get(pos + 1) {
+            return run_join_mode(ticket, no_tui, no_ws, ws_port, no_tcp, tcp_port, web_dir);
+        } else {
+            eprintln!("Usage: cardcraft join <ticket> [--no-tui] [--ws PORT] [--tcp PORT]");
             return Ok(());
         }
     }
 
-    // 3. Standalone network servers if requested
-    if ws_port.is_some() || tcp_port.is_some() {
-        return run_network_servers(game_dir, ws_port, tcp_port, web_dir);
-    }
-
-    if args.iter().any(|arg| arg == "--test") {
-        return run_self_test();
-    }
-
-    if args.iter().any(|arg| arg == "--headless") {
-        return run_headless_demo(&game_dir);
-    }
-
-    // Default: run interactive TUI
-    run_interactive_tui(&game_dir)
+    // 6. Default Server Mode: starts Engine Actor + TUI + WS + TCP + P2P all concurrently
+    run_default_server_mode(game_dir, no_tui, no_ws, ws_port, no_tcp, tcp_port, no_p2p, web_dir)
 }
 
-fn run_network_servers(
+fn run_default_server_mode(
     game_dir: PathBuf,
-    ws_port: Option<u16>,
-    tcp_port: Option<u16>,
+    no_tui: bool,
+    no_ws: bool,
+    ws_port: u16,
+    no_tcp: bool,
+    tcp_port: u16,
+    no_p2p: bool,
     web_dir: PathBuf,
 ) -> anyhow::Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     let local = tokio::task::LocalSet::new();
 
     local.block_on(&rt, async {
-        println!("=== Starting CardCraft Multi-Protocol Server ===");
-        println!("Game Directory: {:?}", game_dir);
         let engine = GameEngine::with_game_dir(&game_dir)?;
         let (handle, engine_task) = cardcraft::server::spawn_engine_actor(engine);
 
+        // 1. Simulation ticker (100ms interval)
+        let ticker_handle = handle.clone();
+        let ticker_task = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_millis(100));
+            loop {
+                interval.tick().await;
+                ticker_handle.tick(0.1).await;
+            }
+        });
+
         let mut tasks = Vec::new();
 
-        if let Some(port) = tcp_port {
+        // 2. Raw TCP Server (:9000 by default)
+        if !no_tcp {
             let h = handle.clone();
             tasks.push(tokio::spawn(async move {
-                cardcraft::server::run_tcp_server(h, port).await
+                cardcraft::server::run_tcp_server(h, tcp_port).await
             }));
+            if no_tui {
+                println!("[TCP Server] Listening on 127.0.0.1:{}", tcp_port);
+            }
         }
 
-        if let Some(port) = ws_port {
+        // 3. Web & WebSocket Server (:8080 by default)
+        if !no_ws {
             let h = handle.clone();
             let wdir = web_dir.clone();
             tasks.push(tokio::spawn(async move {
-                cardcraft::server::run_web_server(h, port, wdir).await
+                cardcraft::server::run_web_server(h, ws_port, wdir).await
             }));
+            if no_tui {
+                println!("[Web Server] Listening on http://localhost:{} (serving {:?})", ws_port, web_dir);
+            }
         }
 
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
-                println!("\nShutdown signal received. Exiting server...");
-            }
-            res = async {
-                for t in tasks {
-                    t.await??;
+        // 4. Iroh P2P Node (auto NAT-punching)
+        if !no_p2p {
+            match cardcraft::p2p::P2pHost::bind().await {
+                Ok(host) => {
+                    let ticket = host.ticket.clone();
+                    if no_tui {
+                        println!("\n[P2P Ready] Connection Ticket for friends:\n  {}\n", ticket);
+                    }
+                    let p2p_handle = handle.clone();
+                    tasks.push(tokio::spawn(async move {
+                        cardcraft::p2p::run_p2p_host_listener(p2p_handle, host).await
+                    }));
                 }
-                Ok::<(), anyhow::Error>(())
-            } => {
-                res?;
+                Err(e) => {
+                    eprintln!("[P2P] Failed to bind endpoint: {:?}", e);
+                }
             }
         }
 
-        drop(handle);
-        engine_task.await.ok();
-        Ok(())
-    })
-}
-
-fn print_help() {
-    println!(r#"CardCraft - A CAD-Driven Stacking Card Game in Steel Scheme & Rust
-
-USAGE:
-    cardcraft [OPTIONS] [COMMAND]
-
-GAME & CONFIG:
-    -g, --game <DIR>            Specify game directory (default: current directory .)
-                                Loads <DIR>/core.scm, sandbox jailed inside <DIR>/saves/
-    --serve, --web-dir <DIR>    Specify directory for static web files (default: ./web)
-
-NETWORK SERVERS (Can run concurrently):
-    --ws [PORT]                 Start WebSocket + HTTP Static File server (default port: 8080)
-                                Browse http://localhost:8080 to play via web browser!
-    --tcp [PORT]                Start raw TCP line-based server (default port: 9000)
-                                Connect with: nc 127.0.0.1 9000
-
-P2P SERVERLESS MULTIPLAYER (Iroh QUIC with Web Bridge):
-    host, --p2p-host [--ws [PORT]] [--tcp [PORT]] [--serve <DIR>]
-                                Start as an Iroh P2P Host (generates ticket).
-                                Optionally bridges to local Web/WebSocket (--ws 8080) and TCP (--tcp 9000).
-    join, --p2p-join <TICKET> [--ws [PORT]] [--tcp [PORT]] [--serve <DIR>]
-                                Join an Iroh P2P Host session using its ticket.
-                                Bridges to local Web/WebSocket (--ws 8080) so you can play via browser!
-
-SINGLE-PLAYER & DEBUG:
-    (no arguments)              Start full interactive terminal TUI game
-    --headless                  Output initial single ASCII frame to stdout and exit
-    --test                      Run internal headless self-test loop with state assertions
-
-INFORMATION:
-    -h, --help                  Print this help message
-    -v, --version               Print version information
-"#);
-}
-
-fn run_p2p_host(
-    game_dir: &Path,
-    ws_port: Option<u16>,
-    tcp_port: Option<u16>,
-    web_dir: PathBuf,
-) -> anyhow::Result<()> {
-    let rt = tokio::runtime::Runtime::new()?;
-    let local = tokio::task::LocalSet::new();
-    let gd = game_dir.to_path_buf();
-
-    local.block_on(&rt, async {
-        println!("=== CardCraft Iroh P2P Host Starting ===");
-        println!("Game Directory: {:?}", gd);
-        let host = cardcraft::p2p::P2pHost::bind().await?;
-        println!("\n[P2P Host Ready!]");
-        println!("Endpoint ID: {}", host.addr.id);
-        println!("\nShare this ticket with your friend to connect without any central server or public IP:\n");
-        println!("  {}\n", host.ticket);
-
-        let engine = GameEngine::with_game_dir(&gd)?;
-        let (handle, engine_task) = cardcraft::server::spawn_engine_actor(engine);
-
-        let mut tasks = Vec::new();
-
-        // 1. P2P Host listener for incoming Iroh peer connections
-        let p2p_handle = handle.clone();
-        tasks.push(tokio::spawn(async move {
-            cardcraft::p2p::run_p2p_host_listener(p2p_handle, host).await
-        }));
-
-        // 2. TCP server (if requested)
-        if let Some(port) = tcp_port {
-            let h = handle.clone();
-            tasks.push(tokio::spawn(async move {
-                cardcraft::server::run_tcp_server(h, port).await
-            }));
-            println!("[P2P Host] TCP line interface: 127.0.0.1:{}", port);
-        }
-
-        // 3. Web/WebSocket server (if requested or by default)
-        let effective_ws_port = if ws_port.is_none() && tcp_port.is_none() {
-            Some(8080)
+        // 5. User Interface (Local TUI or Headless Wait)
+        if !no_tui {
+            run_interactive_tui(handle.clone()).await?;
         } else {
-            ws_port
-        };
-
-        if let Some(port) = effective_ws_port {
-            let h = handle.clone();
-            let wdir = web_dir.clone();
-            tasks.push(tokio::spawn(async move {
-                cardcraft::server::run_web_server(h, port, wdir).await
-            }));
-            println!("[P2P Host Web Bridge] Open in browser: http://localhost:{}", port);
-            println!("[P2P Host Web Bridge] WebSocket endpoint: ws://localhost:{}", port);
-        }
-
-        println!("\nP2P Host is running. Waiting for peers or web client connections (press Ctrl+C to exit)...");
-
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
-                println!("\nShutdown signal received. Exiting P2P Host...");
-            }
-            res = async {
-                for t in tasks {
-                    t.await??;
-                }
-                Ok::<(), anyhow::Error>(())
-            } => {
-                res?;
-            }
+            println!("CardCraft Server running in headless mode. Press Ctrl+C to exit.");
+            tokio::signal::ctrl_c().await.ok();
+            println!("\nShutdown signal received. Exiting server...");
         }
 
         drop(handle);
+        ticker_task.abort();
+        for t in tasks {
+            t.abort();
+        }
         engine_task.await.ok();
         Ok(())
     })
 }
 
-fn run_p2p_join(
+fn run_join_mode(
     ticket: &str,
-    ws_port: Option<u16>,
-    tcp_port: Option<u16>,
+    no_tui: bool,
+    no_ws: bool,
+    ws_port: u16,
+    no_tcp: bool,
+    tcp_port: u16,
     web_dir: PathBuf,
 ) -> anyhow::Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     let ticket_str = ticket.to_string();
+
     rt.block_on(async {
-        println!("=== Connecting to CardCraft Host via Iroh P2P ===");
+        if no_tui {
+            println!("=== Connecting to CardCraft Host via Iroh P2P ===");
+        }
         let client = cardcraft::p2p::P2pClient::new().await?;
         let conn = client.connect_to_ticket(&ticket_str).await?;
-        println!(">>> Connected successfully to P2P Host!");
+        if no_tui {
+            println!(">>> Connected successfully to P2P Host!");
+        }
         let (send_stream, recv_stream) = conn.open_bi().await?;
 
         let (handle, client_task) = cardcraft::p2p::spawn_p2p_client_actor(send_stream, recv_stream);
 
         let mut tasks = Vec::new();
 
-        // 1. TCP bridge (if requested)
-        if let Some(port) = tcp_port {
+        // 1. Local TCP bridge
+        if !no_tcp {
             let h = handle.clone();
             tasks.push(tokio::spawn(async move {
-                cardcraft::server::run_tcp_server(h, port).await
+                cardcraft::server::run_tcp_server(h, tcp_port).await
             }));
-            println!("[P2P TCP Bridge] Listening on port {} (nc 127.0.0.1 {})", port, port);
+            if no_tui {
+                println!("[P2P TCP Bridge] Listening on 127.0.0.1:{}", tcp_port);
+            }
         }
 
-        // 2. Web/WebSocket bridge (if requested or by default)
-        let effective_ws_port = if ws_port.is_none() && tcp_port.is_none() {
-            Some(8080)
-        } else {
-            ws_port
-        };
-
-        if let Some(port) = effective_ws_port {
+        // 2. Local Web bridge
+        if !no_ws {
             let h = handle.clone();
             let wdir = web_dir.clone();
             tasks.push(tokio::spawn(async move {
-                cardcraft::server::run_web_server(h, port, wdir).await
+                cardcraft::server::run_web_server(h, ws_port, wdir).await
             }));
-            println!("[P2P Web Bridge] Open in browser: http://localhost:{}", port);
-            println!("[P2P Web Bridge] WebSocket endpoint: ws://localhost:{}", port);
+            if no_tui {
+                println!("[P2P Web Bridge] Open in browser: http://localhost:{}", ws_port);
+            }
         }
 
-        // Fetch initial state handshake
-        let (initial_resp, _) = handle.message(0, "who".to_string()).await;
-        println!("Host status: {}", initial_resp);
-        println!("\nP2P Client Bridge is active. Press Ctrl+C to exit.");
-
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
-                println!("\nShutdown signal received. Exiting P2P Bridge...");
-            }
-            res = async {
-                for t in tasks {
-                    t.await??;
-                }
-                Ok::<(), anyhow::Error>(())
-            } => {
-                res?;
-            }
+        // 3. User Interface
+        if !no_tui {
+            run_interactive_tui(handle.clone()).await?;
+        } else {
+            println!("P2P Client bridge running. Press Ctrl+C to exit.");
+            tokio::signal::ctrl_c().await.ok();
+            println!("\nShutdown signal received. Exiting P2P client...");
         }
 
         drop(handle);
+        for t in tasks {
+            t.abort();
+        }
         client_task.await.ok();
         Ok(())
     })
 }
 
-fn run_self_test() -> anyhow::Result<()> {
-    println!("=== CardCraft Headless Self-Test ===");
-    let mut engine = GameEngine::new()?;
-    let mut screen = VirtualScreen::new(90, 24)?;
-    let mut cmd_state = CommandState::new();
-
-    // 1. Initial snapshot
-    let snap = engine.get_snapshot()?;
-    screen.render(&snap, &cmd_state)?;
-    println!("Initial frame render success. Cards on board: {}", snap.meta.card_count);
-    assert!(screen.contains("Villager"));
-    assert!(screen.contains("BerryBush"));
-
-    // 2. Stack Villager (1) onto BerryBush (2)
-    let feedback = engine.execute_command("s 1 2")?;
-    cmd_state.set_feedback(feedback);
-    println!("Executed: s 1 2");
-
-    // 3. Tick 2.0s
-    engine.tick(2.0)?;
-    let snap = engine.get_snapshot()?;
-    screen.render(&snap, &cmd_state)?;
-    assert!(screen.contains("Harvest Berry"));
-    println!("2.0s Tick success: Recipe matching & progress verified.");
-
-    // 4. Tick 3.0s (Completion)
-    engine.tick(3.0)?;
-    let snap = engine.get_snapshot()?;
-    screen.render(&snap, &cmd_state)?;
-    assert!(screen.contains("Produced: Berry") || snap.logs.iter().any(|l| l.contains("Produced")));
-    println!("Recipe completed! Berry produced into new slot.");
-
-    println!("\nRendered Virtual Frame:\n");
-    println!("{}", screen.to_string());
-    println!("All self-test assertions passed!");
-    Ok(())
-}
-
-fn run_headless_demo(game_dir: &Path) -> anyhow::Result<()> {
-    println!("Running CardCraft in Headless Mode (Game Dir: {:?})...", game_dir);
-    let mut engine = GameEngine::with_game_dir(game_dir)?;
-    let mut screen = VirtualScreen::new(80, 20)?;
-    let cmd_state = CommandState::new();
-
-    let snap = engine.get_snapshot()?;
-    screen.render(&snap, &cmd_state)?;
-    println!("{}", screen.to_string());
-    Ok(())
-}
-
-fn run_interactive_tui(game_dir: &Path) -> anyhow::Result<()> {
+async fn run_interactive_tui(handle: cardcraft::server::EngineHandle) -> anyhow::Result<()> {
     enable_raw_mode().context("Failed to enable raw mode")?;
     let mut stdout = stdout();
     execute!(stdout, EnterAlternateScreen).context("Failed to enter alternate screen")?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).context("Failed to initialize terminal")?;
 
-    let res = run_event_loop(&mut terminal, game_dir);
+    let res = run_event_loop(&mut terminal, handle).await;
 
-    // Restore terminal safely even if an error occurred
     disable_raw_mode().ok();
     execute!(terminal.backend_mut(), LeaveAlternateScreen).ok();
     terminal.show_cursor().ok();
@@ -397,27 +265,25 @@ fn run_interactive_tui(game_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn run_event_loop(
+async fn run_event_loop(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
-    game_dir: &Path,
+    handle: cardcraft::server::EngineHandle,
 ) -> anyhow::Result<()> {
-    let mut engine = GameEngine::with_game_dir(game_dir)?;
     let mut cmd_state = CommandState::new();
-    let tick_rate = Duration::from_millis(100);
-    let mut last_tick = Instant::now();
+    handle.connect(0).await;
+    let tick_interval = Duration::from_millis(50);
 
     loop {
-        // Draw frame
-        let snapshot = engine.get_snapshot()?;
-        terminal.draw(|f| {
-            render_ui(f, &snapshot, &cmd_state);
-        })?;
+        // Draw frame from EngineHandle
+        if let Some(snapshot) = handle.get_snapshot_view().await {
+            terminal.draw(|f| {
+                render_ui(f, &snapshot, &cmd_state);
+            })?;
+        }
 
-        // Poll keyboard event with remaining tick time
-        let timeout = tick_rate.saturating_sub(last_tick.elapsed());
-        if event::poll(timeout)? {
+        // Poll keyboard event non-blockingly
+        if event::poll(tick_interval)? {
             if let Event::Key(key) = event::read()? {
-                // Windows Console emits both Press and Release events; filter out non-Press
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
@@ -459,26 +325,93 @@ fn run_event_loop(
                         if cmd == "q" || cmd == "quit" || cmd == "exit" {
                             break;
                         }
-                        match engine.execute_command(&cmd) {
-                            Ok(feedback) => {
-                                cmd_state.set_feedback(feedback);
-                            }
-                            Err(e) => {
-                                cmd_state.set_feedback(format!("Error: {}", e));
-                            }
-                        }
+                        let (feedback, _) = handle.message(0, cmd).await;
+                        cmd_state.set_feedback(feedback);
                     }
                     _ => {}
                 }
             }
         }
-
-        // Advance simulation tick
-        if last_tick.elapsed() >= tick_rate {
-            engine.tick(0.1)?;
-            last_tick = Instant::now();
-        }
     }
 
+    handle.disconnect(0).await;
     Ok(())
+}
+
+fn run_self_test() -> anyhow::Result<()> {
+    println!("=== CardCraft Headless Self-Test ===");
+    let mut engine = GameEngine::new()?;
+    let mut screen = VirtualScreen::new(90, 24)?;
+    let mut cmd_state = CommandState::new();
+
+    // 1. Initial snapshot
+    let snap = engine.get_snapshot()?;
+    screen.render(&snap, &cmd_state)?;
+    println!("Initial frame render success. Cards on board: {}", snap.meta.card_count);
+    assert!(screen.contains("Villager"));
+    assert!(screen.contains("BerryBush"));
+
+    // 2. Stack Villager (1) onto BerryBush (2)
+    let feedback = engine.execute_command("s 1 2")?;
+    cmd_state.set_feedback(feedback);
+    println!("Executed: s 1 2");
+
+    // 3. Tick 2.0s
+    engine.tick(2.0)?;
+    let snap = engine.get_snapshot()?;
+    screen.render(&snap, &cmd_state)?;
+    assert!(screen.contains("Harvest Berry"));
+    println!("2.0s Tick success: Recipe matching & progress verified.");
+
+    // 4. Tick 3.0s (Completion)
+    engine.tick(3.0)?;
+    let snap = engine.get_snapshot()?;
+    screen.render(&snap, &cmd_state)?;
+    assert!(screen.contains("Produced: Berry") || snap.logs.iter().any(|l| l.contains("Produced")));
+    println!("Recipe completed! Berry produced into new slot.");
+
+    println!("\nRendered Virtual Frame:\n");
+    println!("{}", screen.to_string());
+    println!("All self-test assertions passed!");
+    Ok(())
+}
+
+fn print_help() {
+    println!(r#"CardCraft - A CAD-Driven Stacking Card Game in Steel Scheme & Rust
+
+USAGE:
+    cardcraft [OPTIONS] [COMMAND]
+
+GAME & DIRECTORY:
+    -g, --game <DIR>            Specify game directory (default: .)
+                                Loads <DIR>/core.scm, saves jailed to <DIR>/saves/, web from <DIR>/web
+    --serve, --web-dir <DIR>    Override directory for static web files (default: <game>/web or ./web)
+
+DEFAULT BEHAVIOR:
+    Running `cardcraft` without arguments automatically starts ALL interfaces concurrently:
+      * Interactive Local Terminal (TUI)
+      * Web/WebSocket Server on http://localhost:8080
+      * Raw TCP Socket Server on 127.0.0.1:9000
+      * Iroh P2P Host Node (generating an encrypted NAT-punching ticket)
+
+JOINING A GAME:
+    join <TICKET>               Connect to an active P2P host session using its ticket.
+                                Bridges to local TUI and Web interface automatically.
+
+PORT OVERRIDES:
+    --ws [PORT]                 Set Web/WebSocket port (default: 8080)
+    --tcp [PORT]                Set raw TCP server port (default: 9000)
+
+OPT-OUT FLAGS:
+    --headless, --no-tui        Run without local terminal TUI (background server mode)
+    --no-net                    Offline single-player mode (disable all network ports & P2P)
+    --no-ws                     Disable Web/WebSocket server
+    --no-tcp                    Disable TCP server
+    --no-p2p                    Disable P2P node
+
+DEVELOPMENT & DEBUG:
+    --test                      Run internal headless self-test loop with state assertions
+    -h, --help                  Print this help message
+    -v, --version               Print version information
+"#);
 }

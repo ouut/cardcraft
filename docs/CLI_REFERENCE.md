@@ -1,165 +1,107 @@
 # CardCraft CLI Reference & Multi-Server Guide
 
-CardCraft 提供强大的多模式运行能力：支持原生终端 TUI、Web/WebSocket 浏览器连接、裸 TCP 自动化行协议、以及基于 Iroh 的 P2P 穿透联机。
+CardCraft 提供强大的多模式运行能力：默认全开本地终端 TUI、Web/WebSocket 浏览器连接、裸 TCP 自动化行协议、以及基于 Iroh 的 P2P 穿透联机。
 
 ---
 
 ## 1. 命令行参数概览
 
-| 选项 / 参数 | 简写 | 默认值 | 描述 |
+| 选项 / 参数 | 简写 | 默认行为 | 描述 |
 | :--- | :--- | :--- | :--- |
-| `-g, --game <DIR>` | `-g` | `.` | 指定游戏根目录。自动加载 `<DIR>/core.scm` 或 `<DIR>/main.scm`，并将持久化文件沙盒隔离在 `<DIR>/saves/` |
-| `--ws [PORT]` | 无 | `8080` | 启动 Web/WebSocket 混合服务（单端口同时提供静态 HTTP 页面与 WebSocket 实时双向流） |
-| `--serve, --web-dir <DIR>` | 无 | `./web` | 指定静态网页文件托管目录（与 `--ws` 联动） |
-| `--tcp [PORT]` | 无 | `9000` | 启动裸 TCP 纯文本行式交互服务（供 `nc`、`telnet`、Python 自动化脚本等接入） |
-| `host` | 无 | - | 启动 P2P Host 模式，生成并打印可跨公网 NAT 穿透的连接 Ticket |
-| `join <TICKET>` | 无 | - | 启动 P2P Join 模式，通过 Ticket 穿透连接到远端 Host |
-| `--headless` | 无 | - | 无界面模式（不启动 Ratatui 终端界面），适合后台服务器或批处理运行 |
+| **(无参数)** | - | **默认全开** | 自动同时开启本地 TUI + Web(:8080) + TCP(:9000) + P2P Ticket 生成 |
+| `-g, --game <DIR>` | `-g` | `.` | 指定游戏根目录。自动加载 `<DIR>/core.scm`，数据隔离在 `<DIR>/saves/`，静态页探测 `<DIR>/web/` |
+| `--serve, --web-dir <DIR>` | 无 | `<game>/web` 或 `./web` | 手动覆盖静态网页文件托管目录 |
+| `join <TICKET>` | 无 | - | 作为客机加入远端对局，本地同时拉起 TUI 终端与网页桥接 |
+| `--ws [PORT]` | 无 | `8080` | 自定义 Web/WebSocket 服务端口 |
+| `--tcp [PORT]` | 无 | `9000` | 自定义裸 TCP 纯文本行式交互服务端口 |
+| `--headless`, `--no-tui` | 无 | - | 关闭本地 TUI 界面（纯后台服务器模式，适合云主机或 Docker 部署） |
+| `--no-net` | 无 | - | 纯单机离线模式（完全关闭网络与所有端口占用） |
+| `--no-ws` | 无 | - | 仅关闭 Web/WebSocket 服务 |
+| `--no-tcp` | 无 | - | 仅关闭 TCP 服务 |
+| `--no-p2p` | 无 | - | 仅关闭 P2P 穿透端点 |
 | `--test` | 无 | - | 运行内部集成自测（包含 Scheme 算力与状态机测试）并退出 |
 | `-h, --help` | `-h` | - | 打印帮助信息 |
 | `-v, --version` | `-v` | - | 打印版本信息 |
 
 ---
 
-## 2. 详细选项说明与使用模式
+## 2. 核心架构与各通道职责
 
-### 2.1 游戏目录与沙盒隔离 (`-g, --game`)
+### 2.1 游戏目录规范 (`-g, --game`)
+每个游戏自成一个独立的“游戏资产包（Game Bundle）”，脚本、存档、网页各司其职：
 
-CardCraft 允许每个游戏拥有独立的 Scheme 业务脚本和专属的存档空间。
+```text
+games/
+└── my_rpg/
+    ├── core.scm (或 main.scm)   # [Script] 100% 游戏业务规则、配方、数值与逻辑
+    ├── saves/                   # [Save]   沙盒隔离持久化目录（存储 json/scm 存档）
+    └── web/                     # [Web]    该游戏专用的网页客户端（HTML/CSS/JS 资源）
+```
 
+#### 资源加载与解析策略：
+1. **脚本探测**：优先加载 `<game_dir>/core.scm` $\to$ `<game_dir>/main.scm` $\to$ 内置兜底脚本。
+2. **沙盒根目录**：文件读写严格封锁在 `<game_dir>/saves/`，拒绝任何路径穿越（`../`）。
+3. **Web 资源目录**：
+   - 自动探测：若 `<game_dir>/web/` 存在，则 HTTP 服务直接托管该目录；
+   - 备选探测：若当前游戏没有自己的 `web/`，则回退使用全局默认的 `./web/` 终端控制台网页；
+   - 覆盖选项：通过 `--serve <DIR>` 可以手动指定任意外部前端工程目录。
+
+---
+
+### 2.2 协议接入分层：各通道定位分明
+
+CardCraft 统一使用 `EngineHandle` 作为权威中枢通道，所有接入端完全平权：
+
+| 接入方式 | 协议载体 | 定位与目标客户端 | 交互特点 |
+| :--- | :--- | :--- | :--- |
+| **本地 TUI** | 内存通道 (`EngineHandle`) | 本机控制台（极客/无桌面环境/SSH） | 80x25 字符画渲染、键盘快捷键输入 |
+| **WS 方式** | HTTP 静态托管 + WebSocket | 浏览器现代富前端（Pixi.js / Vue / 拖拽） | 端口默认 `8080`，双向传输 JSON 数据快照 |
+| **TCP 方式** | 裸 TCP Socket（行协议） | 远端终端直连、CI 自动化脚本、AI Agent | 端口默认 `9000`，`\n` 分隔的 ASCII 命令与反馈 |
+| **P2P 管道** | Iroh QUIC 加密隧道 | 跨公网、免中央服务器的穿透传输通道 | 本身不绑定应用层业务，承载 TCP 或 WS 流 |
+
+---
+
+## 3. 详细使用场景示例
+
+### 3.1 零配置开箱即用（全服务并发就绪）
 ```bash
-# 运行指定目录下的游戏
+# 启动默认游戏
+cardcraft
+
+# 启动指定游戏
 cardcraft -g ./games/solitaire
-
-# 启动 web/ws 服务运行自定义游戏
-cardcraft -g ./games/market_rpg --ws 8080
 ```
+* **本地控制台**：立即进入 TUI 终端游戏界面。
+* **浏览器访问**：打开 `http://localhost:8080`，即可通过网页界面同步游玩！
+* **远端脚本**：使用 `nc localhost 9000` 直连交互。
+* **联机好友**：终端启动日志中已包含生成的 Iroh P2P Ticket，朋友输入 Ticket 即可穿透连入。
 
-#### 脚本解析优先级：
-1. `<game_dir>/core.scm`
-2. `<game_dir>/main.scm`
-3. CardCraft 内置的默认《堆叠大陆/CardCraft》核心 Scheme 脚本。
-
-#### 存档沙盒保护（Path Traversal Jail）：
-- 游戏脚本调用 `(system-file-write "save.json" content)` 或 `(system-file-read "save.json")` 时，路径强制限定在 `<game_dir>/saves/` 目录下。
-- 自动创建 `<game_dir>/saves/` 目录。
-- 拒绝任何路径穿越攻击（例如 `../`, `../../etc/passwd` 会直接抛出安全异常）。
-
----
-
-### 2.2 Web / WebSocket 混合服务 (`--ws`, `--serve`)
-
-`--ws` 端口采用了**协议嗅探与单端口复用**技术（Single-Port HTTP + WS Multiplexing）：
-- **普通 HTTP 请求**：返回 `--serve` 指定目录下的静态资源（默认 `./web`）。访问 `http://localhost:8080` 即可加载极简复古终端 Web 客户端。
-- **WebSocket 升级握手**：若请求头包含 `Upgrade: websocket`，自动升级为全双工 WebSocket 长连接，与 Scheme 引擎进行双向事件与状态传输。
-
+### 3.2 加入他人对局 (`join`)
 ```bash
-# 启动默认 Web 服务 (端口 8080, 静态根目录 ./web)
-cardcraft --ws
-
-# 指定端口并托管自定义 Web 前端
-cardcraft --ws 3000 --serve ./my-custom-frontend
-
-# 后台服务器模式运行 Web 端
-cardcraft -g ./games/my_game --ws 8080 --headless
-```
-
-#### 浏览器访问：
-打开浏览器访问 `http://localhost:8080/`：
-- 页面自动建立 WebSocket 握手。
-- 实时渲染服务端推送的 80x25 虚拟终端快照与聊天室消息。
-- 支持在浏览器底部输入框直接输入 CAD 指令（如 `BUY basic`、`STACK 1 2`、`WHISPER 0 hello`）。
-
----
-
-### 2.3 裸 TCP 纯文本服务端 (`--tcp`)
-
-`--tcp` 服务端为各类外部工具、AI Agent、自动化测试以及终端工具提供了极简的以换行符 `\n` 分隔的 ASCII 接口。
-
-```bash
-# 启动 TCP 端口 9000
-cardcraft --tcp 9000
-
-# 同时开启 WebSocket (8080) 与 TCP (9000)
-cardcraft --ws 8080 --tcp 9000
-```
-
-#### 客户端连接方式：
-- **Netcat (`nc`)**:
-  ```bash
-  nc localhost 9000
-  # 连接后会收到欢迎横幅与客户端 ID，如:
-  # Welcome to CardCraft TCP Server! Your client ID is 0.
-  
-  # 发送 CAD 指令
-  BUY basic
-  # 发送广播消息
-  CHAT Hello everyone!
-  # 查看状态快照
-  SNAPSHOT
-  ```
-- **Telnet**:
-  ```bash
-  telnet localhost 9000
-  ```
-- **Python / 自动化脚本**:
-  ```python
-  import socket
-  s = socket.create_connection(('localhost', 9000))
-  print(s.recv(1024).decode())
-  s.sendall(b"BUY basic\n")
-  print(s.recv(1024).decode())
-  ```
-
----
-
-### 2.4 Iroh P2P 穿透联机与本地 Web/TCP 桥接 (`host` / `join`)
-
-基于 Iroh QUIC 协议栈，提供无需公网 IP 和端口映射的 P2P 直连联机对战。同时支持**本地 Web/TCP 协议桥接**（Local Web Bridge），使玩家或第三方客户端（如 Web 前端、Pixi.js、Vue/React、自动化 Bot）可以通过本地 `ws://localhost:8080` 无缝接入 P2P 对局！
-
-#### 1. Host 模式（服务端/主机）：
-```bash
-# 主机启动（默认开启 P2P 端点 + 本地 Web/WebSocket 桥接 8080）
-cardcraft host
-
-# 自定义 Web 端口、网页目录及 TCP 端口
-cardcraft host --ws 8080 --serve ./web --tcp 9000
-```
-- 控制台将输出生成的直连 Ticket：`cardcraft://...`。
-- 主机玩家可直接在浏览器打开 `http://localhost:8080` 进行游玩。
-- 支持多个远端 P2P Peer 同时接入。
-
-#### 2. Join 模式（客户端/客机）：
-```bash
-# 加入对局（默认自动在本地拉起 Web 桥接 http://localhost:8080）
+# 客机通过 Ticket 连入好友对局
 cardcraft join cardcraft://...
-
-# 指定自定义 Web 端口（如两台设备或多开）
-cardcraft join cardcraft://... --ws 8081 --serve ./web
-
-# 通过命令行 / nc 接入本地 TCP 桥接
-cardcraft join cardcraft://... --tcp 9001
 ```
-- 本地 `cardcraft` 负责底层的 Iroh QUIC P2P 加密隧道通信与 NAT 穿透。
-- 本地开启 `ws://localhost:8081`（以及静态 HTTP 托管），玩家直接打开浏览器即可游玩远端主机的游戏！
-- **第三方客户端开发者**无需编写任何 P2P / QUIC 代码，只需连接本地 WebSocket，发送 CAD 指令并监听 JSON 快照即可！
+* 本地自动作为 P2P 客户端连接远端主机。
+* 本地同时启动本地 TUI 界面与 `http://localhost:8080` 网页桥接，玩家既可以在终端玩，也可以在浏览器玩。
 
----
-
-### 2.5 混合服务组合示例
-
-CardCraft 允许同时启用多种网络接口，所有接入的客户端均进入同一个游戏引擎实例中协同或对战：
-
+### 3.3 无头后台服务器模式 (`--headless` / `--no-tui`)
+适合部署在 Linux 云主机、Docker 容器或 CI 环境中：
 ```bash
-# 启动游戏 solitaire，同时监听 HTTP/WS (8080) 和 TCP (9000)，无界面后台运行
-cardcraft -g ./games/solitaire --ws 8080 --tcp 9000 --headless
+cardcraft -g ./games/market_rpg --headless
+```
+* 控制台不占用终端屏幕，打印出 Web 端口与 P2P Ticket 供外部连接。
+
+### 3.4 纯单机离线模式 (`--no-net`)
+完全不占用任何网络端口，零安全风险：
+```bash
+cardcraft --no-net
 ```
 
 ---
 
-## 3. 并发架构与 Actor 线程模型
+## 4. 并发架构与 Actor 线程模型
 
-CardCraft 的 Steel Scheme 解释引擎包含非线程安全的引用计数类型 (`!Send`)。为了同时安全支撑异步多客户端网络通信（WebSocket、TCP、P2P）：
+CardCraft 的 Steel Scheme 解释引擎包含非线程安全的引用计数类型 (`!Send`)。为了同时安全支撑本地 TUI、WebSocket、TCP 与 P2P 多方并发操作：
 
 ```
 +-------------------------------------------------------+
@@ -172,21 +114,21 @@ CardCraft 的 Steel Scheme 解释引擎包含非线程安全的引用计数类�
         +---------------------------------------+
         |         EngineHandle (Send + Sync)    |
         +---------------------------------------+
-          /                 |                 \
-         v                  v                  v
-+----------------+  +----------------+  +----------------+
-|  Tokio Task    |  |  Tokio Task    |  |  Tokio Task    |
-|   WebSocket    |  |   TCP Socket   |  |   Iroh P2P     |
-|   Clients      |  |   Clients      |  |   Peers        |
-+----------------+  +----------------+  +----------------+
+          /          |              |          \
+         v           v              v           v
++----------------+ +------------+ +------------+ +------------+
+|  Local TUI     | | WebSocket  | | TCP Socket | |  Iroh P2P  |
+|  Terminal Loop | |  (Port)    | |  (Port)    | |   Peers    |
++----------------+ +------------+ +------------+ +------------+
 ```
 
 1. **`GameEngine` 驻留主 Actor 线程**：所有 Scheme 脚本求值、CAD 指令解析、状态变更、网络钩子触发 (`net-on-connect!`, `net-on-message!`, `net-on-disconnect!`) 均在单线程顺序执行，确保游戏状态的一致性与无锁安全。
-2. **`EngineHandle` 跨线程分发**：网络连接仅持有轻量级可克隆的 `EngineHandle`，通过异步通道发送 `EngineCommand`，并将结果回传给网络套接字。
+2. **`EngineHandle` 跨线程分发**：本地 TUI、网络套接字与 P2P 桥接均持有轻量级可克隆的 `EngineHandle`。
+3. **双向协同 (Co-op)**：本地玩家在终端输入指令，网页端瞬间更新；网页端玩家拖拽卡牌，本地终端实时重绘。
 
 ---
 
-## 4. 常见问题 (FAQ)
+## 5. 常见问题 (FAQ)
 
 ### Q1: 客户端需要下载或执行 Scheme 脚本吗？
 **不需要**。CardCraft 采用权威服务端（Authoritative Server）架构。客户端只需发送简短的 CAD 命令或文本消息，并接收服务器广播的状态快照或通知。
@@ -195,4 +137,4 @@ CardCraft 的 Steel Scheme 解释引擎包含非线程安全的引用计数类�
 **是的**。内置的极简文件服务器自动为 `.html`, `.css`, `.js`, `.json`, `.svg`, `.png`, `.txt` 等设置正确的 `Content-Type`。
 
 ### Q3: 端口冲突或无法启动？
-检查端口占用情况，或在命令行通过参数换用备用端口，例如 `--ws 8088 --tcp 9009`。
+可以通过 `--ws 8088 --tcp 9009` 自定义端口，或者使用 `--no-ws` / `--no-tcp` 停用特定服务。

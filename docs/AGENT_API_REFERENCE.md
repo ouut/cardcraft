@@ -44,19 +44,25 @@ CardCraft 采用**“窄腰沙漏（Narrow-Waist）”双核解耦架构**：
 
 ## 2. 游戏目录结构与沙盒保护
 
-通过命令行参数 `-g, --game <DIR>` 指定游戏工作目录（默认为当前目录 `.`）：
+通过命令行参数 `-g, --game <DIR>` 指定游戏工作目录（默认为当前目录 `.`）。每个游戏为一个完整的自包含资产包：
 
 ```text
 <game_dir>/
 ├── core.scm              # [优先级 1] 游戏主业务入口
 ├── main.scm              # [优先级 2] 备选入口（若无 core.scm）
-└── saves/                # [沙盒隔离目录] 由引擎自动创建
-    └── slot1.json        # 存档与持久化数据（严格限制在此目录中）
+├── saves/                # [沙盒隔离目录] 由引擎自动创建（存储存档数据）
+│   └── slot1.json
+└── web/                  # [Web 客户端] 该游戏的专属网页前端（引擎自动探测与 HTTP 托管）
+    ├── index.html
+    └── style.css
 ```
 
 > [!IMPORTANT]
 > **沙盒文件隔离规则 (Path Traversal Jail)**：
 > 游戏脚本调用 `(system-file-write path content)` 或 `(system-file-read path)` 时，路径被严格限定在 `<game_dir>/saves/` 内。任何使用 `../`、`../../` 试图逃逸至上层目录的读写均会被 Rust 宿主拦截并拒绝。
+>
+> **Web 客户端自动探测**：
+> 若 `<game_dir>/web/` 存在，Web 服务自动托管该目录；若不存在，自动回退使用全局 `./web/` 控制台前端。可通过 `--serve <DIR>` 手动指定任意外部路径。
 
 ---
 

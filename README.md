@@ -25,39 +25,42 @@
 * [Rust](https://rustup.rs/) (1.75+ 推荐)
 * Cargo 包管理器
 
-### 1. 运行交互式终端游戏
+### 1. 启动游戏（默认全开模式）
 ```bash
+# 直接运行：默认同时开启 TUI 终端 + Web(8080) + TCP(9000) + P2P Ticket
 cargo run --release
-```
-* 进入游戏后，使用底部命令行输入 CAD 命令进行卡牌操作。
-* 输入 `q` 或按下 `Ctrl+C` 退出。
 
-### 2. 启动 Web 控制台与网络服务
+# 运行指定游戏目录（自动加载 <dir>/core.scm, 隔离 <dir>/saves/, 托管 <dir>/web/）
+cargo run --release -- -g ./games/my_game
+```
+* **本地玩家**：在终端通过字符界面和底部 CAD 命令行直接操作。
+* **浏览器玩家**：打开 `http://localhost:8080`，通过 Web 界面同步操作同一局游戏。
+* **远端脚本/AI**：通过 `nc localhost 9000` 发送指令。
+* **联机好友**：拿到 P2P Ticket 即可直接加入。
+
+### 2. 加入好友对局 (P2P 联机)
 ```bash
-# 启动混合 Web/WebSocket 服务 (默认端口 8080，静态目录 ./web)
-cargo run -- --ws 8080
-
-# 访问浏览器即可游玩：http://localhost:8080
-
-# 启动裸 TCP 纯文本行式服务端 (默认端口 9000，可用 nc/telnet/自动化脚本交互)
-cargo run -- --tcp 9000
-
-# 同时开启 Web 与 TCP 服务，后台运行指定游戏
-cargo run -- -g ./games/my_game --ws 8080 --tcp 9000 --headless
+# 作为客户端加入（本地同时拉起 TUI 终端与 http://localhost:8080 网页桥接）
+cargo run --release -- join cardcraft://...
 ```
 
-### 3. P2P 去中心化穿透联机 (Iroh QUIC)
+### 3. 按需微调与无头服务模式 (Opt-out)
 ```bash
-# 主机启动（输出 Ticket 并拉起本地 http://localhost:8080 浏览器桥接）
-cargo run -- host
+# 无头后台服务器模式（关闭 TUI，保留 Web/TCP/P2P，适合云主机或 Docker）
+cargo run --release -- --headless
 
-# 客户端加入（输入好友 Ticket，自动在本地建立 Web 桥接 http://localhost:8080）
-cargo run -- join cardcraft://...
+# 纯单机离线模式（完全关闭网络与端口占用，纯本地终端极速游玩）
+cargo run --release -- --no-net
+
+# 自定义端口覆盖
+cargo run --release -- --ws 3000 --tcp 9999
 ```
 
-### 4. 运行自动化自检与演示
+### 4. 运行全套自检测试
 ```bash
 # 运行内置无头自测，并在控制台打印虚拟渲染帧
+cargo run --release -- --test
+```
 cargo run -- --test
 
 # 运行单帧无头演示
