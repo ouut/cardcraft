@@ -75,91 +75,57 @@ pub fn spawn_p2p_client_actor(
     let mut reader = BufReader::new(recv_stream);
 
     let join_handle = tokio::spawn(async move {
-        while let Some(cmd) = rx.recv().await {
-            match cmd {
-                EngineCommand::Message { client_id: _, text, reply } => {
-                    let mut line_to_send = text;
-                    line_to_send.push('\n');
-                    if send_stream.write_all(line_to_send.as_bytes()).await.is_err()
-                        || send_stream.flush().await.is_err()
-                    {
-                        reply.send(("P2P Connection Lost".to_string(), None)).ok();
-                        break;
-                    }
+        // Send initial newline to activate the QUIC bi-stream on the host immediately
+        let _ = send_stream.write_all(b"\n").await;
+        let _ = send_stream.flush().await;
 
-                    let mut line = String::new();
-                    loop {
-                        line.clear();
-                        match reader.read_line(&mut line).await {
-                            Ok(n) if n > 0 => {
-                                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
-                                    if val.get("type").and_then(|v| v.as_str()) == Some("event") {
-                                        if let Some(msg) = val.get("message").and_then(|v| v.as_str()) {
-                                            hub_client.send_all(msg);
-                                        }
-                                        continue;
-                                    }
-                                    let feedback = val.get("feedback")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("")
-                                        .to_string();
-                                    let snap_str = val.get("snapshot")
-                                        .filter(|v| !v.is_null())
-                                        .map(|v| v.to_string());
-                                    reply.send((feedback, snap_str)).ok();
-                                    break;
-                                } else {
-                                    reply.send((line.trim().to_string(), None)).ok();
-                                    break;
+        let mut last_snapshot: Option<String> = None;
+        let mut line = String::new();
+
+        loop {
+            tokio::select! {
+                res = reader.read_line(&mut line) => {
+                    match res {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {
+                            let trimmed = line.trim();
+                            if !trimmed.is_empty() {
+                                let msg = serde_json::from_str::<String>(trimmed)
+                                    .unwrap_or_else(|_| trimmed.to_string());
+                                if msg.contains("\"grid\"") {
+                                    last_snapshot = Some(msg.clone());
                                 }
+                                hub_client.send_all(&msg);
                             }
-                            _ => {
-                                reply.send(("P2P Connection Closed".to_string(), None)).ok();
-                                break;
-                            }
+                            line.clear();
                         }
                     }
                 }
-                EngineCommand::GetSnapshot { reply } => {
-                    if send_stream.write_all(b"SNAPSHOT\n").await.is_err()
-                        || send_stream.flush().await.is_err()
-                    {
-                        reply.send(None).ok();
-                        break;
-                    }
-
-                    let mut line = String::new();
-                    loop {
-                        line.clear();
-                        match reader.read_line(&mut line).await {
-                            Ok(n) if n > 0 => {
-                                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
-                                    if val.get("type").and_then(|v| v.as_str()) == Some("event") {
-                                        if let Some(msg) = val.get("message").and_then(|v| v.as_str()) {
-                                            hub_client.send_all(msg);
-                                        }
-                                        continue;
-                                    }
-                                    let snap_str = val.get("snapshot")
-                                        .filter(|v| !v.is_null())
-                                        .map(|v| v.to_string());
-                                    reply.send(snap_str).ok();
-                                    break;
-                                } else {
-                                    reply.send(None).ok();
-                                    break;
-                                }
-                            }
-                            _ => {
-                                reply.send(None).ok();
-                                break;
+                cmd_opt = rx.recv() => {
+                    match cmd_opt {
+                        Some(EngineCommand::Connect { client_id }) => {
+                            if let Some(ref snap) = last_snapshot {
+                                hub_client.send_to(client_id, snap);
                             }
                         }
+                        Some(EngineCommand::Message { client_id: _, text, reply }) => {
+                            let mut line_to_send = text;
+                            line_to_send.push('\n');
+                            if send_stream.write_all(line_to_send.as_bytes()).await.is_err()
+                                || send_stream.flush().await.is_err()
+                            {
+                                reply.send("P2P Connection Lost".to_string()).ok();
+                                break;
+                            }
+                            reply.send("OK".to_string()).ok();
+                        }
+                        Some(EngineCommand::GetSnapshot { reply }) => {
+                            reply.send(last_snapshot.clone()).ok();
+                        }
+                        Some(EngineCommand::Disconnect { .. }) | Some(EngineCommand::Tick { .. }) => {}
+                        None => break,
                     }
                 }
-                EngineCommand::Connect { .. } => {}
-                EngineCommand::Disconnect { .. } => {}
-                EngineCommand::Tick { .. } => {}
             }
         }
     });
@@ -182,21 +148,19 @@ pub async fn run_p2p_host_listener(
 
         let h = handle.clone();
         tokio::spawn(async move {
+            let (mut send_stream, recv_stream) = match conn.accept_bi().await {
+                Ok(streams) => streams,
+                Err(e) => {
+                    eprintln!("[P2P Host] accept_bi failed: {:?}", e);
+                    return;
+                }
+            };
+
             let client_id = get_next_client_id();
             let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
             h.hub().register(client_id, out_tx);
             h.connect(client_id).await;
             println!("[P2P Host] Peer #{} connected via Iroh QUIC.", client_id);
-
-            let (mut send_stream, recv_stream) = match conn.accept_bi().await {
-                Ok(streams) => streams,
-                Err(e) => {
-                    eprintln!("[P2P Host] accept_bi failed: {:?}", e);
-                    h.hub().unregister(client_id);
-                    h.disconnect(client_id).await;
-                    return;
-                }
-            };
 
             let mut reader = BufReader::new(recv_stream);
             let mut line = String::new();
@@ -204,11 +168,7 @@ pub async fn run_p2p_host_listener(
             loop {
                 tokio::select! {
                     Some(out_msg) = out_rx.recv() => {
-                        let payload = serde_json::json!({
-                            "type": "event",
-                            "message": out_msg
-                        });
-                        let mut out = serde_json::to_string(&payload).unwrap_or_default();
+                        let mut out = serde_json::to_string(&out_msg).unwrap_or_default();
                         out.push('\n');
                         if send_stream.write_all(out.as_bytes()).await.is_err()
                             || send_stream.flush().await.is_err()
@@ -221,25 +181,8 @@ pub async fn run_p2p_host_listener(
                             Ok(0) => break,
                             Ok(_) => {
                                 let trimmed = line.trim();
-                                let (feedback, snap_json) = if trimmed == "SNAPSHOT" {
-                                    let s = h.get_snapshot().await;
-                                    (String::new(), s)
-                                } else {
-                                    h.message(client_id, trimmed.to_string()).await
-                                };
-
-                                let payload = serde_json::json!({
-                                    "type": "response",
-                                    "feedback": feedback,
-                                    "snapshot": snap_json.and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-                                });
-
-                                let mut out = serde_json::to_string(&payload).unwrap_or_default();
-                                out.push('\n');
-                                if send_stream.write_all(out.as_bytes()).await.is_err()
-                                    || send_stream.flush().await.is_err()
-                                {
-                                    break;
+                                if !trimmed.is_empty() {
+                                    h.message(client_id, trimmed.to_string()).await;
                                 }
                                 line.clear();
                             }

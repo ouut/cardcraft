@@ -1,288 +1,125 @@
-# CardCraft 开发者指南：Rust 与 Steel Scheme 互操作与扩展
+# CardCraft 玩家与开发者指南 (Human Guide)
 
-本文档面向想要深入二次开发、扩充游戏引擎能力或编写高级 Mod 的开发者。详细说明 **`core.scm` 能访问哪些 Rust 接口**、**如何在 Rust 中为 Scheme 注册新的宿主接口**，以及**完整的双向调用与开发测试流程**。
+本文档面向人类玩家与开发者，涵盖 **CLI 启动参数、Stacklands 核心玩法与配方、系统架构设计、网络流机制以及二次开发指南**。
 
 ---
 
-## 一、 架构总览：双向互操作模型
+## 一、 快速启动与 CLI 参数 (`src/main.rs`)
 
-CardCraft 采用双向互操作设计：
+### 1. 默认全开服务模式
+不带参数运行 `cardcraft` 时，程序默认在一个进程内并发启动 **本地 TUI 终端 + HTTP/WebSocket 服务 (:8080) + 裸 TCP 服务 (:9000) + Iroh P2P 节点**：
+
+```bash
+# 启动默认 Stacklands 游戏
+cargo run --release
+
+# 加载指定目录的独立游戏（读取 <DIR>/core.scm，托管 <DIR>/web/，存档隔离在 <DIR>/saves/）
+cargo run --release -- -g examples/chatroom
+```
+
+### 2. 加入好友的 P2P 对局
+房主启动后会生成一段 `cardcraft://...` 加密节点票据（Ticket）。客方直接运行 `join` 即可通过 Iroh QUIC 自动打洞直连，并在本地同步桥接出 TUI、`:8080` 网页端与 `:9000` TCP 端口：
+
+```bash
+cargo run --release -- join cardcraft://7b22696422...
+```
+
+### 3. 命令行参数一览
+
+| 参数 | 说明 | 默认值 |
+| :--- | :--- | :--- |
+| `-g, --game <DIR>` | 指定游戏目录（加载 `<DIR>/core.scm` 或 `main.scm`） | `.` |
+| `--serve, --web-dir <DIR>` | 覆盖静态网页托管目录 | `<game>/web` 或 `./web` |
+| `--ws, --ws-port <PORT>` | 设置 HTTP + WebSocket 复用端口 | `8080` |
+| `--tcp, --tcp-port <PORT>` | 设置裸 TCP 行协议端口（可用 `nc` 连接） | `9000` |
+| `--headless, --no-tui` | 关闭本地终端界面，作为纯后台无头服务器运行 | 关闭 |
+| `--no-net` | 纯单机离线模式（关闭 WS、TCP 与 P2P） | 关闭 |
+| `--no-ws` / `--no-tcp` / `--no-p2p` | 单独关闭对应网络服务 | 关闭 |
+| `--test` | 运行内置无头自检测试并输出虚拟终端渲染帧 | - |
+| `-h, --help` / `-v, --version` | 查看帮助或版本信息 | - |
+
+---
+
+## 二、 游戏指令与合成配方 (`scripts/core.scm`)
+
+### 1. CAD 命令行与多人指令
+无论在本地 TUI、浏览器底部输入框，还是 `nc 127.0.0.1 9000` 中，均使用统一的指令集：
+
+| 类别 | 指令 | 示例 | 作用 |
+| :--- | :--- | :--- | :--- |
+| **卡牌操作** | `s <from> <to>` | `s 1 2` | 将卡栈 `from` 叠到 `to` 上，自动匹配合成配方 |
+| **卡牌操作** | `u <id>` | `u 2` | 从卡栈 `id` 顶部拆出一张卡到新卡槽 |
+| **卡牌操作** | `m <from> <to>` | `m 3 10` | 将卡栈 `from` 移动到空闲槽位 `to` |
+| **商店与经济** | `b <pack>` | `b basic` | 购买卡包：`basic`(3G), `food`(5G), `struct`(10G), `explore`(12G) |
+| **商店与经济** | `o <id>` | `o 6` | 打开槽位 `id` 中的卡包，随机获得 3 张卡牌 |
+| **商店与经济** | `x <id>` | `x 4` | 出售槽位 `id` 顶部的卡牌换取金币 |
+| **时间控制** | `w [秒数]` | `w 5` | 快进指定秒数（默认 1 秒） |
+| **时间控制** | `p` | `p` | 暂停 / 恢复游戏时间推进 |
+| **多人社交** | `nick <name>` | `nick Alice` | 修改自己的在线昵称 |
+| **多人社交** | `say <msg>` | `say Hello` | 发送全服公屏消息 |
+| **多人社交** | `w <user> <msg>` | `w Bob Hi!` | 向指定昵称的玩家发送私聊密语（目标非数字时识别为私聊） |
+| **多人社交** | `who` | `who` | 查看当前在线玩家列表 |
+| **上帝模式** | `(<scheme>)` | `(spawn-card! "Sword")` | 本地控制台中以 `(` 开头的输入直接作为 Scheme 代码求值 |
+
+### 2. 核心合成配方表（部分代表性配方）
+* **采集**：`Villager + BerryBush` -> `Berry` (4s) | `Villager + Tree` -> `Wood` (5s) | `Villager + Rock` -> `Stone` (5s) | `Villager + IronDeposit` -> `IronOre` (6s)
+* **加工**：`Villager + Wood` -> `Stick x2` (3s) | `Villager + Wood x2` -> `Plank` (4s) | `Villager + Stone x2` -> `Brick` (4s) | `Smelter + IronOre + Wood` -> `IronBar` (5s)
+* **建筑**：`Villager + Wood x2 + Stone` -> `Campfire` / `LumberCamp` | `Villager + Wood + Stone x2` -> `Shed` (+5 卡牌上限) | `Villager + Wood x2 + Stone x2` -> `House` | `Villager + Plank + Brick + IronBar` -> `Warehouse` (+10 卡牌上限)
+* **烹饪与农业**：`Campfire + Berry` -> `CookedBerry` | `Campfire + RawMeat` -> `CookedMeat` | `Villager + Soil + Berry` -> `BerryBush`
+* **军事与繁衍**：`Villager + Wood + Flint` -> `Spear` | `Villager + Spear` -> `Militia` | `Villager + Sword` -> `Swordsman` | `Villager x2 + House` -> `Baby` -> `Villager`
+
+---
+
+## 三、 系统架构设计
 
 ```text
-┌─────────────────────────────────────────────────────────────┐
-│                    Rust 宿主环境 (Host)                      │
-│                                                             │
-│   [Engine::new()]                                           │
-│         │                                                   │
-│         │ 1. 注册宿主能力 (vm.register_fn)                   │
-│         ▼                                                   │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ 暴露的系统原语体系 (System Primitives)：            │   │
-│   │ • (system-log level msg)                            │   │
-│   │ • (system-utils-random-int min max)                 │   │
-│   │ • (system-window-size)                              │   │
-│   │ • (system-time-now)                                 │   │
-│   │ • (system-file-write path content)                  │   │
-│   │ • (system-file-read path)                           │   │
-│   │ • (system-net-send! cid msg)                        │   │
-│   │ • (system-net-disconnect! cid)                      │   │
-│   └─────────────────────────────────────────────────────┘   │
-│         │                                                   │
-│         │ 2. 注入并执行 core.scm                             │
-│         ▼                                                   │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ Steel Scheme 解释器空间 (Guest VM)                  │   │
-│   │                                                     │   │
-│   │   * (game-start!)                                   │   │
-│   │   * (game-update! dt)                               │   │
-│   │   * (game-input '("s" "1" "2"))                     │   │
-│   │   * (game-render)                                   │   │
-│   └─────────────────────────────────────────────────────┘   │
-│         ▲                                                   │
-│         │ 3. 抽取只读 JSON 快照 (Serde 反序列化)              │
-│         │                                                   │
-│   [GameViewSnapshot 虚拟缓冲渲染 / TUI 显示]                 │
-└─────────────────────────────────────────────────────────────┘
++-------------------------------------------------------------------------+
+|                   GameEngine Actor (tokio::task::LocalSet)              |
+|            持有唯一 Steel Scheme VM 实例 (Single Source of Truth)         |
++-------------------------------------------------------------------------+
+               ^                                           |
+               | EngineCommand (Connect/Message/Tick)      | NetEvent (system-net-send!)
+               |                                           v
++-------------------------------------------------------------------------+
+|                        EngineHandle & ClientHub                         |
++-------------------------------------------------------------------------+
+     /                      |                        |                 \
+    v                       v                        v                  v
+[Local TUI]          [Web/WS :8080]           [TCP :9000]         [Iroh P2P]
+(Crossterm)       (HTTP 静态 + WS 升级)      (nc / 自动化脚本)    (QUIC 穿透桥接)
 ```
 
----
+### 1. 窄腰沙漏架构 (Narrow-Waist Architecture)
+* **Rust 宿主层 (`src/engine.rs`, `src/server.rs`, `src/p2p.rs`, `src/render.rs`)**：不存储任何游戏业务概念（无卡牌、金币或地图结构）。仅负责终端事件采集、网络并发 I/O、文件沙盒校验与 ANSI 字符网格渲染。
+* **Scheme 逻辑层 (`scripts/core.scm`)**：100% 掌控游戏状态机、多重集配方匹配、行编辑器（`*tui-input-buffer*`）、全屏 ASCII/ANSI 排版（`game-render`）以及所有客户端的网络推送。
 
-## 二、 `core.scm` 当前可访问的 Rust 接口
+### 2. 纯流转发网络模型 (Pure `system-net-send!` Stream)
+* Rust 的 TCP、WebSocket 与 P2P 服务端**不主动拉取或包装任何游戏快照**。
+* 当客户端连入、发消息或时钟推进时，何时发数据、发给哪个 `client_id`、发普通文本还是 JSON 画面快照，**完全由 Scheme 调用 `(system-net-send! cid msg)` 决定**。
+* 因此，如果是多人处在不同地图的 RPG 游戏，Scheme 只需根据每个 `cid` 所在的地图分别调用 `(system-net-send! cid (render-map-for cid))`，Rust 层无需任何改动。
 
-在 `src/engine.rs` 中，Rust 引擎向 Scheme 空间直接注入了以下标准宿主函数：
-
-### 1. 高熵随机数生成器：`(system-utils-random-int min max)`
-* **说明**：基于 Rust `rand` 库的高性能硬件随机数，闭区间 `[min, max]`。（兼容别名：`rust-random-int`）
-* **参数**：
-  * `min` (Integer): 最小值（例如 `0`）。
-  * `max` (Integer): 最大值（例如 `4`）。
-* **返回值**：`(Integer)` 生成的随机整数。
-* **在 `core.scm` 中的实际应用**：
-  ```scheme
-  ;; 从列表中随机抽取一项
-  (define (random-choice lst)
-    (if (null? lst)
-        #f
-        (let* ([len (length lst)]
-               [idx (system-utils-random-int 0 (- len 1))])
-          (list-ref lst idx))))
-
-  ;; 开启基础卡包时随机掉落
-  (let* ([pool '("Wood" "Stone" "BerryBush" "Berry" "Coin")]
-         [drop (random-choice pool)])
-    (spawn-card! drop))
-  ```
+### 3. 单端口 HTTP 与 WebSocket 协议嗅探 (`src/server.rs`)
+* `run_web_server` 通过 `TcpStream::peek` 嗅探请求头：若包含 `upgrade: websocket` 则交由 `tokio-tungstenite` 升级为 WebSocket 流；否则作为静态文件 HTTP 服务器返回 `<web_dir>/index.html`。
 
 ---
 
-### 2. 高精度时间戳与判定：`(system-time-now)`
-* **说明**：获取当前系统自 Unix 纪元起的秒级浮点时间戳（`f64`，高精度微秒级）。已合并废弃原毫秒级的 `(rust-millis)`。
-* **参数**：无。
-* **返回值**：`(Number)` 当前秒数（`f64`，例如 `1729697210.1234`）。
-* **示例**：
-  ```scheme
-  (let ([start (system-time-now)])
-    ;; 执行某项大列表计算...
-    (let ([cost (- (system-time-now) start)])
-      (system-log "INFO" (string-append "Calculation took " (number->string cost) "s"))))
-  ```
+## 四、 二次开发与测试指南
 
----
-
-### 3. 终端视口尺寸获取：`(system-window-size)`
-* **说明**：获取当前运行环境物理终端窗口的列宽与行数，供全屏 ASCII 渲染器做自适应响应式排版。
-* **参数**：无。
-* **返回值**：`(List)` 二元列表 `'(width height)`，如 `'(80 25)`。通过 `(car (system-window-size))` 取得列宽，`(cadr (system-window-size))` 取得行高。（兼容别名：`system-terminal-width` 与 `system-terminal-height`）
-* **示例**：
-  ```scheme
-  (let* ([sz (system-window-size)]
-         [width (car sz)]
-         [height (cadr sz)])
-    (system-log "INFO" (string-append "Terminal: " (number->string width) "x" (number->string height))))
-  ```
-
----
-
-### 4. 系统日志输出：`(system-log level msg)`
-* **说明**：向宿主标准错误（stderr）或后台日志管道打印格式化日志。（兼容别名：`rust-log`）
-* **参数**：
-  * `level` (String): 日志级别，如 `"DEBUG"`、`"INFO"`、`"WARN"`、`"ERROR"`。
-  * `msg` (String): 日志正文。
-* **返回值**：`#<void>`。
-* **示例**：
-  ```scheme
-  (system-log "WARN" "Villager is starving!")
-  ```
-
----
-
-### 5. 文件写入（沙盒保护）：`(system-file-write path content)`
-* **说明**：将字符串保存至本地磁盘文件（用于存档或导出游戏数据）。
-* **安全沙盒 (Path Traversal Jail)**：所有文件写入被强制限制在当前游戏目录的 `<game_dir>/saves/` 目录下，系统自动创建该目录，拒绝任何 `../` 逃逸尝试。
-* **参数**：
-  * `path` (String): 文件相对路径（相对于 `<game_dir>/saves/`）。
-  * `content` (String): 写入的内容（通常是 JSON 或 S 表达式）。
-* **返回值**：`(Boolean)` 写入成功返回 `#true`，失败返回 `#false`。
-* **示例**：
-  ```scheme
-  (system-file-write "slot1.json" (game-render))
-  ```
-
----
-
-### 6. 文件读取（沙盒保护）：`(system-file-read path)`
-* **说明**：从本地磁盘读取文本文件（用于读档）。
-* **安全沙盒 (Path Traversal Jail)**：所有文件读取强制限定在 `<game_dir>/saves/` 目录下，禁止读取宿主系统文件。
-* **参数**：
-  * `path` (String): 文件相对路径（相对于 `<game_dir>/saves/`）。
-* **返回值**：`(String)` 文件内容；若读取失败返回空字符串 `""`。
-* **示例**：
-  ```scheme
-  (let ([saved-state (system-file-read "slot1.json")])
-    (display saved-state))
-  ```
-
----
-
-### 7. 网络通信原语与 3 大事件钩子 (The Network Primitives & Hooks)
-
-CardCraft 将所有网络与多人业务（聊天、私聊、房间、匹配、游戏指令路由）下放至 Scheme，Rust 宿主仅负责高并发套接字搬运：
-
-#### (1) Rust 注入的网络通信原语 (极简流转发管道)
-* **`(system-net-send! client-id message)`**：向指定的已连接客户端单播下发文本流。（兼容：`net-send!`，广播与私聊等业务由 Scheme 列表遍历自主实现）
-* **`(system-net-disconnect! client-id)`**：强制断开指定客户端连接。（兼容：`net-disconnect!`）
-* **`(system-time-now)`**：获取当前系统自 Unix 纪元起的高精度浮点秒数（`f64`），便于 Scheme 内置超时或计时器判定。
-
-#### (2) Scheme 响应的 3 大事件钩子
-* **`(net-on-connect! client-id)`**：当新客户端连入时自动触发，完成默认角色分配与在线表注册。
-* **`(net-on-disconnect! client-id)`**：当客户端断开连接时自动触发，清理在线表并广播离线消息。
-* **`(net-on-message! client-id message-string)`**：当收到客户端的文本包时触发，内置支持 `say`（公屏聊天）、`w`（私聊密语）、`nick`（改名）、`who`（查在线列表）以及 CAD 游戏指令转发。
-
-> [!TIP]
-> 详细网络业务实现场景（聊天室、私聊、房间隔离、天梯匹配、交易行、防刷频与风控）与完整 Scheme 源码，请参阅专属技术文档：[NETWORK_MODULE.md](NETWORK_MODULE.md)。
-
----
-
-## 三、 开发者实战：如何给 Scheme 注册新的 Rust 接口？
-
-如果你想让 Scheme 支持更多底层能力（例如：音频音效、网络请求、SQLite 存储、物理震动），只需在 Rust 中使用 `RegisterFn` 注册函数即可。
-
-### 1. 接口类型映射对照表
-
-Steel Scheme 支持自动进行原生类型双向转换：
-
-| Rust 类型 | Steel Scheme 类型 | 说明 |
-| :--- | :--- | :--- |
-| `i64` / `isize` / `i32` | `Integer` | 整数 |
-| `f64` / `f32` | `Number` | 浮点数 |
-| `bool` | `Boolean` (`#true` / `#false`) | 布尔值 |
-| `String` / `&str` | `String` | 字符串 |
-| `Vec<T>` | `List` | 列表（若 `T` 可转换） |
-| `()` | `#<void>` | 空返回值 |
-
----
-
-### 2. 步骤 1：在 `src/engine.rs` 引入 `RegisterFn` 并注册
-
-打开 `src/engine.rs`，在 `GameEngine::new()` 中使用 `vm.register_fn` 注入函数：
+### 1. 在 Rust 中向 Scheme 注入新函数 (`src/engine.rs`)
+在 `GameEngine::with_game_dir` 中通过 `vm.register_fn` 即可暴露新的 Rust 函数：
 
 ```rust
-use steel::steel_vm::register_fn::RegisterFn;
-
-impl GameEngine {
-    pub fn new() -> Result<Self> {
-        let mut vm = Engine::new();
-
-        // 示例 1: 注册一个音效播放接口
-        vm.register_fn("rust-play-sound", |sound_name: String| {
-            // 调用 rodio 或系统音频后端播放音效
-            eprintln!("[AUDIO]: Playing sound asset -> {sound_name}.wav");
-        });
-
-        // 示例 2: 注册一个求质数计算的重计算函数
-        vm.register_fn("rust-is-prime", |n: i64| -> bool {
-            if n <= 1 { return false; }
-            for i in 2..=((n as f64).sqrt() as i64) {
-                if n % i == 0 { return false; }
-            }
-            true
-        });
-
-        // ... 后续加载 core.scm ...
-    }
-}
+vm.register_fn("system-my-func", |arg: String| -> String {
+    format!("Processed by Rust: {}", arg)
+});
 ```
 
----
+### 2. 编写新游戏或示例 (`examples/`)
+只需新建一个目录（如 `examples/my_rpg/`），放入 `core.scm`（以及可选的专属 `web/index.html`），实现 `game-start!`、`game-update!`、`game-render` 和 `net-on-message!` 四个函数，即可通过 `cargo run -- -g examples/my_rpg` 运行。
 
-### 3. 步骤 2：在 Scheme 中无缝调用
+### 3. 运行自动化测试 (`tests/headless_tests.rs`)
+借助 `VirtualScreen`（基于 `ratatui::backend::TestBackend` 的内存屏幕），所有 UI 渲染与网络交互均可无头测试：
 
-注册后，无需任何额外配置，`core.scm` 或用户在终端 CAD 命令行中即可直接像调用普通 Scheme 函数一样使用：
-
-```scheme
-;; 在合成成功时触发音效
-(if (equal? recipe-name "Harvest Berry")
-    (rust-play-sound "harvest_pop"))
-
-;; 调用 Rust 高性能计算
-(if (rust-is-prime 104729)
-    (add-log! "Discovered a prime easter egg!"))
-```
-
----
-
-## 四、 Rust 如何调用 Scheme 层的接口？
-
-从 Rust 调用 Scheme 只需要使用 `self.vm.run(code)`：
-
-### 1. 无参驱动调用
-```rust
-// 推进世界时钟 0.1 秒
-self.vm.run("(game-update! 0.1)")?;
-```
-
-### 2. 传参驱动调用
-```rust
-// 执行用户输入的 CAD 命令（参数自动转为 Scheme 列表）
-let code = format!("(game-input '({}))", tokens_str);
-let res = self.vm.run(code)?;
-```
-
-### 3. 提取返回值并反序列化（极窄接口模型）
-Scheme 侧统一将展示数据打包为 JSON 字符串返回：
-```rust
-let res = self.vm.run("(game-render)")?;
-if let Some(steel::rvals::SteelVal::StringV(json_str)) = res.last() {
-    let snapshot: GameViewSnapshot = serde_json::from_str(json_str)?;
-    // 将快照送往虚拟缓冲层渲染...
-}
-```
-
----
-
-## 五、 开发与调试技巧
-
-### 1. 利用终端自带的 Lisp God Mode 实时联调
-在运行游戏时（`cargo run`），底部的命令行除了支持 `s 1 2` 这类 CAD 简写指令外，**支持输入任意 Scheme 表达式**：
-
-* 输入 `(system-utils-random-int 1 100)`：立即看到随机数返回。
-* 输入 `(system-log "TEST" "debugging something")`：观察 stderr 输出。
-* 输入 `(spawn-card! "Apple")`：实时向当前场上注入卡牌。
-
-### 2. 编写无头单测（Headless Tests）
-在 `tests/headless_tests.rs` 中增加单测验证你的新接口，毫秒级得出结果：
-
-```rust
-#[test]
-fn test_my_custom_binding() {
-    let mut engine = GameEngine::new().unwrap();
-    let res = engine.execute_command("(system-utils-random-int 1 10)").unwrap();
-    let n: i64 = res.parse().unwrap();
-    assert!(n >= 1 && n <= 10);
-}
-```
-
-运行测试：
 ```bash
-cargo test --test headless_tests
+cargo test
 ```

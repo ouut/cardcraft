@@ -476,7 +476,8 @@
                         (set! *world-stacks* (consume-from-stacks *world-stacks*))))))
               (set! *world-moon* (+ *world-moon* 1))
               (set! *world-day-time-left* *world-day-duration*)
-              (add-log! (string-append "=== Moon " (number->string *world-moon*) " Begun! ===")))))
+              (add-log! (string-append "=== Moon " (number->string *world-moon*) " Begun! ==="))))
+        (broadcast-view!))
       #f))
 
 ;;; -----------------------------------------------------------------------------
@@ -719,15 +720,34 @@
                    cl))
              *net-clients*)))
 
+(define *last-broadcast-view* "")
+
 (define (broadcast! msg)
   (for-each (lambda (c) (system-net-send! (car c) msg)) *net-clients*))
+
+(define (send-view! cid)
+  (when (> cid 0)
+    (let ([view (game-render)])
+      (set! *last-broadcast-view* view)
+      (system-net-send! cid view))))
+
+(define (broadcast-view!)
+  (when (not (null? *net-clients*))
+    (let ([view (game-render)])
+      (when (not (equal? view *last-broadcast-view*))
+        (set! *last-broadcast-view* view)
+        (for-each (lambda (c)
+                    (when (> (car c) 0)
+                      (system-net-send! (car c) view)))
+                  *net-clients*)))))
 
 (define (net-on-connect! cid)
   (let ([default-name (string-append "Player_" (number->string cid))])
     (set! *net-clients* (cons (list cid default-name) *net-clients*))
+    (add-log! (string-append "Player #" (number->string cid) " connected."))
+    (send-view! cid)
     (system-net-send! cid (string-append "=== Welcome to CardCraft! You are " default-name " ==="))
     (broadcast! (string-append ">>> " default-name " connected to the server."))
-    (add-log! (string-append "Player #" (number->string cid) " connected."))
     "OK"))
 
 (define (net-on-disconnect! cid)
@@ -810,6 +830,7 @@
             [else
              (let ([res (game-input cid tokens)])
                (system-net-send! cid (string-append "Result: " res))
+               (broadcast-view!)
                res)])))))
 
 (define (net-on-message! cid msg-str)
@@ -825,6 +846,7 @@
                 "OK"
                 (let ([res (dispatch-command! cid cmd)])
                   (set! *tui-last-feedback* res)
+                  (broadcast-view!)
                   res)))]
          [(equal? k "backspace")
           (let ([len (string-length *tui-input-buffer*)])

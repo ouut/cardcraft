@@ -73,7 +73,7 @@ pub enum EngineCommand {
     Message {
         client_id: isize,
         text: String,
-        reply: oneshot::Sender<(String, Option<String>)>,
+        reply: oneshot::Sender<String>,
     },
     GetSnapshot {
         reply: oneshot::Sender<Option<String>>,
@@ -108,12 +108,12 @@ impl EngineHandle {
         self.tx.send(EngineCommand::Connect { client_id }).await.ok();
     }
 
-    pub async fn message(&self, client_id: isize, text: String) -> (String, Option<String>) {
+    pub async fn message(&self, client_id: isize, text: String) -> String {
         let (reply_tx, reply_rx) = oneshot::channel();
         if self.tx.send(EngineCommand::Message { client_id, text, reply: reply_tx }).await.is_ok() {
-            reply_rx.await.unwrap_or_else(|_| ("Engine Error".to_string(), None))
+            reply_rx.await.unwrap_or_else(|_| "Engine Error".to_string())
         } else {
-            ("Engine Stopped".to_string(), None)
+            "Engine Stopped".to_string()
         }
     }
 
@@ -162,8 +162,7 @@ pub fn spawn_engine_actor(mut engine: GameEngine) -> (EngineHandle, tokio::task:
                     };
                     let events = engine.drain_net_events();
                     hub_clone.dispatch_events(events);
-                    let snap_json = engine.get_snapshot().ok().and_then(|s| serde_json::to_string(&s).ok());
-                    reply.send((resp, snap_json)).ok();
+                    reply.send(resp).ok();
                 }
                 EngineCommand::GetSnapshot { reply } => {
                     let snap_json = engine.get_snapshot().ok().and_then(|s| serde_json::to_string(&s).ok());
@@ -225,12 +224,7 @@ pub async fn run_tcp_server(handle: EngineHandle, port: u16) -> Result<()> {
                             Ok(_) => {
                                 let trimmed = line.trim();
                                 if !trimmed.is_empty() {
-                                    let (resp, _) = h.message(cid, trimmed.to_string()).await;
-                                    let reply = format!("{}\n", resp);
-                                    if writer.write_all(reply.as_bytes()).await.is_err() {
-                                        break;
-                                    }
-                                    writer.flush().await.ok();
+                                    h.message(cid, trimmed.to_string()).await;
                                 }
                                 line.clear();
                             }
@@ -307,32 +301,20 @@ async fn handle_websocket(socket: TcpStream, handle: EngineHandle) {
 
     let (mut ws_sender, mut ws_receiver) = ws_stream.split();
 
-    // Send initial snapshot
-    if let Some(snap_json) = handle.get_snapshot().await {
-        ws_sender.send(Message::Text(snap_json.into())).await.ok();
-    }
-
     loop {
         tokio::select! {
             Some(out_msg) = out_rx.recv() => {
-                let payload = serde_json::json!({
-                    "type": "event",
-                    "message": out_msg
-                });
-                ws_sender.send(Message::Text(payload.to_string().into())).await.ok();
+                if ws_sender.send(Message::Text(out_msg.into())).await.is_err() {
+                    break;
+                }
             }
             msg_res = ws_receiver.next() => {
                 match msg_res {
                     Some(Ok(Message::Text(txt))) => {
                         let trimmed = txt.trim();
-                        let (resp, snap_json) = handle.message(cid, trimmed.to_string()).await;
-
-                        let payload = serde_json::json!({
-                            "type": "response",
-                            "feedback": resp,
-                            "snapshot": snap_json.and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-                        });
-                        ws_sender.send(Message::Text(payload.to_string().into())).await.ok();
+                        if !trimmed.is_empty() {
+                            handle.message(cid, trimmed.to_string()).await;
+                        }
                     }
                     Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
                     _ => {}

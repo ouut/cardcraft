@@ -155,6 +155,7 @@
       (let ([def-name (if (= cid 0) "Host" (string-append "Guest_" (number->string cid)))])
         (set! *net-clients* (append *net-clients* (list (list cid def-name))))
         (when (> cid 0)
+          (system-net-send! cid (game-render))
           (let ([join-msg (string-append ANSI-CYAN "*** " def-name " joined the chatroom ***" ANSI-RESET)])
             (broadcast! join-msg)
             (add-message! join-msg))

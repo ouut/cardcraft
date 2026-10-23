@@ -444,11 +444,16 @@ async fn test_tcp_server_connection_and_command() {
         stream.write_all(b"say Hello from Netcat\n").await.unwrap();
         stream.flush().await.unwrap();
 
-        // Read response
+        // Read response from Scheme system-net-send!
         let mut reader = BufReader::new(stream);
-        let mut response = String::new();
-        reader.read_line(&mut response).await.unwrap();
-        assert!(response.contains("OK"));
+        let response = loop {
+            let mut l = String::new();
+            reader.read_line(&mut l).await.unwrap();
+            if l.contains("Hello from Netcat") {
+                break l;
+            }
+        };
+        assert!(response.contains("Hello from Netcat"));
 
         drop(handle);
         engine_task.abort();
@@ -502,18 +507,17 @@ async fn test_web_server_static_file_and_websocket() {
         // Send command over WebSocket
         ws_stream.send(Message::Text("s 1 2".into())).await.unwrap();
 
-        // Read response (skipping any async welcome events)
+        // Read response pushed by Scheme via system-net-send!
         let resp_msg = loop {
             let msg = ws_stream.next().await.unwrap().unwrap();
             if let Message::Text(ref txt) = msg {
-                if txt.contains("response") {
+                if txt.contains("Result: OK") || txt.contains("Harvest Berry") {
                     break msg;
                 }
             }
         };
         if let Message::Text(txt) = resp_msg {
-            assert!(txt.contains("response"));
-            assert!(txt.contains("OK"));
+            assert!(txt.contains("OK") || txt.contains("Harvest Berry"));
         } else {
             panic!("Expected response message");
         }
@@ -580,14 +584,13 @@ async fn test_p2p_bridge_websocket_and_tcp() {
         let resp_msg = loop {
             let msg = ws_stream.next().await.unwrap().unwrap();
             if let Message::Text(ref txt) = msg {
-                if txt.contains("response") {
+                if txt.contains("Result: OK") || txt.contains("Harvest Berry") {
                     break msg;
                 }
             }
         };
         if let Message::Text(txt) = resp_msg {
-            assert!(txt.contains("response"));
-            assert!(txt.contains("OK"));
+            assert!(txt.contains("OK") || txt.contains("Harvest Berry"));
         } else {
             panic!("Expected response message from Host");
         }

@@ -134,18 +134,20 @@
       ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
-          if (data.meta) {
+          if (data && (data.meta || data.grid)) {
             renderSnapshot(data);
-          } else if (data.snapshot) {
+          } else if (data && data.snapshot) {
             renderSnapshot(data.snapshot);
             if (data.feedback && data.feedback !== "OK") {
               addLog("Feedback: " + data.feedback);
             }
-          } else if (data.message) {
+          } else if (data && data.message) {
             addLog(data.message);
+          } else {
+            addLog(event.data);
           }
         } catch (e) {
-          addLog("Message: " + event.data);
+          addLog(event.data);
         }
       };
 
@@ -199,14 +201,19 @@
       if (snap.grid && snap.grid.length > 0) {
         let gridEl = document.getElementById("terminalGrid");
         if (!gridEl) {
-          const main = document.querySelector("main");
-          if (main) {
-            main.innerHTML = `<pre id="terminalGrid" style="flex:1; background:#000; color:#c9d1d9; font-family:'Courier New', monospace; font-size:14px; line-height:1.2; padding:12px; overflow:auto; white-space:pre; border-radius:6px; border:1px solid var(--border);"></pre>`;
+          const list = document.getElementById("stacksList");
+          if (list) {
+            list.style.padding = "0";
+            list.innerHTML = `<pre id="terminalGrid" style="flex:1; background:#000; color:#c9d1d9; font-family:'Courier New', monospace; font-size:14px; line-height:1.2; padding:12px; overflow:auto; white-space:pre; border-radius:0 0 6px 6px; margin:0;"></pre>`;
             gridEl = document.getElementById("terminalGrid");
           }
         }
         if (gridEl) {
           gridEl.innerHTML = ansiToHtml(snap.grid.join("\n"));
+        }
+        if (!snap.metrics && !snap.meta) {
+          const statsRow = document.getElementById("statsRow");
+          if (statsRow) statsRow.style.display = "none";
         }
       }
 
@@ -279,8 +286,9 @@
 
     function addLog(text) {
       const logsBox = document.getElementById("logsBody");
+      if (!logsBox) return;
       const p = document.createElement("p");
-      p.textContent = "• " + text;
+      p.innerHTML = "• " + ansiToHtml(text);
       logsBox.appendChild(p);
       logsBox.scrollTop = logsBox.scrollHeight;
     }
