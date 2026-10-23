@@ -62,33 +62,67 @@ CardCraft 的游戏规则引擎完全基于 **Steel Scheme** 构建。所有的�
   * 若某张卡在合成中作为**工具/工人**保留（如采果时的村民与果丛），则**不放入**此列表；
   * 若某张卡作为**消耗品/建筑材料**销毁（如造营火时的木头与石头），则**必须放入**此列表。
 
-### 2. 核心配方一览
+### 2. 核心配方一览 (Stacklands 原版精细还原)
 ```scheme
 (define *recipes*
-  '(;; 1. 农业采集：保留村民和果丛，每 4 秒生成 1 颗浆果
-    ("Harvest Berry" ("Villager" "BerryBush") 4.0 ("Berry") ())
+  '(;; 1. 农业与资源采集
+    ("Harvest Berry"  ("Villager" "BerryBush") 4.0 ("Berry") ())
+    ("Chop Tree"      ("Villager" "Tree") 5.0 ("Wood") ())
+    ("Mine Rock"      ("Villager" "Rock") 5.0 ("Stone") ())
+    ("Mine Iron"      ("Villager" "IronDeposit") 6.0 ("IronOre") ())
 
-    ;; 2. 砍伐与采石：
-    ("Chop Tree"     ("Villager" "Tree") 5.0 ("Wood") ())
-    ("Mine Rock"     ("Villager" "Rock") 5.0 ("Stone") ())
+    ;; 2. 烹饪与加工 (营火烹饪)
+    ("Cook Berry"     ("Campfire" "Berry") 3.0 ("CookedBerry") ("Berry"))
+    ("Cook Meat"      ("Campfire" "RawMeat") 4.0 ("CookedMeat") ("RawMeat"))
+    ("Fruit Salad"    ("Campfire" "Berry" "Apple") 4.0 ("FruitSalad") ("Berry" "Apple"))
+    ("Meat Stew"      ("Campfire" "CookedMeat" "Carrot") 5.0 ("Stew") ("CookedMeat" "Carrot"))
 
-    ;; 3. 烹饪食物：营火保留，生浆果被消耗，产生高饱食度熟浆果
-    ("Cook Berry"    ("Campfire" "Berry") 3.0 ("CookedBerry") ("Berry"))
+    ;; 3. 种植与农业循环 (Soil / Garden / Farm)
+    ("Plant Berry"    ("Villager" "Soil" "Berry") 6.0 ("BerryBush") ("Berry"))
+    ("Plant Tree"     ("Villager" "Soil" "Apple") 8.0 ("Tree") ("Apple"))
+    ("Farm Carrots"   ("Villager" "Farm" "Carrot") 5.0 ("Carrot" "Carrot") ())
+    ("Garden Berries" ("Villager" "Garden" "Berry") 5.0 ("Berry" "Berry") ())
 
-    ;; 4. 建造营火：村民保留，2木1石被消耗
+    ;; 4. 材料加工
+    ("Make Stick"     ("Villager" "Wood") 3.0 ("Stick" "Stick") ("Wood"))
+    ("Make Plank"     ("Villager" "Wood" "Wood") 4.0 ("Plank") ("Wood" "Wood"))
+    ("Make Brick"     ("Villager" "Stone" "Stone") 4.0 ("Brick") ("Stone" "Stone"))
+    ("Smelt Iron"     ("Smelter" "IronOre" "Wood") 5.0 ("IronBar") ("IronOre" "Wood"))
+
+    ;; 5. 装备打造与职业转职
+    ("Craft Spear"    ("Villager" "Wood" "Flint") 4.0 ("Spear") ("Wood" "Flint"))
+    ("Equip Militia"  ("Villager" "Spear") 2.0 ("Militia") ("Villager" "Spear"))
+    ("Craft Sword"    ("Villager" "IronBar" "Stick") 5.0 ("Sword") ("IronBar" "Stick"))
+    ("Train Swordsman" ("Villager" "Sword") 3.0 ("Swordsman") ("Villager" "Sword"))
+    ("Tame Wolf"      ("Wolf" "Bone") 5.0 ("Dog") ("Wolf" "Bone"))
+
+    ;; 6. 建筑建造
     ("Build Campfire" ("Villager" "Wood" "Wood" "Stone") 6.0 ("Campfire") ("Wood" "Wood" "Stone"))
-
-    ;; 5. 建造棚屋：扩充卡牌上限（+5上限）
     ("Build Shed"     ("Villager" "Wood" "Stone" "Stone") 6.0 ("Shed") ("Wood" "Stone" "Stone"))
-
-    ;; 6. 建造房屋：用于人口繁衍
     ("Build House"    ("Villager" "Wood" "Wood" "Stone" "Stone") 8.0 ("House") ("Wood" "Wood" "Stone" "Stone"))
+    ("Build Garden"   ("Villager" "Soil" "Wood" "Stone") 6.0 ("Garden") ("Soil" "Wood" "Stone"))
+    ("Build Farm"     ("Villager" "Garden" "Plank" "Brick") 8.0 ("Farm") ("Garden" "Plank" "Brick"))
+    ("Build Quarry"   ("Villager" "Stone" "Stone" "Wood") 8.0 ("Quarry") ("Stone" "Stone" "Wood"))
+    ("Build LumberCamp" ("Villager" "Wood" "Wood" "Stone") 8.0 ("LumberCamp") ("Wood" "Wood" "Stone"))
+    ("Build Smelter"  ("Villager" "Brick" "Brick" "Flint") 8.0 ("Smelter") ("Brick" "Brick" "Flint"))
+    ("Build Warehouse" ("Villager" "Plank" "Brick" "IronBar") 10.0 ("Warehouse") ("Plank" "Brick" "IronBar"))
 
-    ;; 7. 人口繁衍：2个村民在房屋中培育婴儿
+    ;; 7. 持续性工业生产 (Automation)
+    ("Work Quarry"    ("Villager" "Quarry") 5.0 ("Stone") ())
+    ("Work LumberCamp" ("Villager" "LumberCamp") 5.0 ("Wood") ())
+
+    ;; 8. 人口繁衍与成长
     ("Breed Villager" ("Villager" "Villager" "House") 10.0 ("Baby") ())
+    ("Grow Baby"      ("Baby") 10.0 ("Villager") ("Baby"))
+    ("Grow Baby House" ("Baby" "House") 6.0 ("Villager") ("Baby"))
 
-    ;; 8. 婴儿成长：婴儿成长为成年村民
-    ("Grow Baby"      ("Baby") 10.0 ("Villager") ("Baby"))))
+    ;; 9. 怪物战斗与狩猎
+    ("Fight Rat"      ("Villager" "Rat") 4.0 ("RawMeat" "Coin") ("Rat"))
+    ("Hunt Rat"       ("Militia" "Rat") 2.0 ("RawMeat" "Coin") ("Rat"))
+    ("Fight Goblin"   ("Militia" "Goblin") 4.0 ("Coin" "Bone") ("Goblin"))
+    ("Slay Goblin"    ("Swordsman" "Goblin") 2.5 ("Coin" "Spear") ("Goblin"))
+    ("Fight Skeleton" ("Swordsman" "Skeleton") 4.0 ("Sword" "Bone") ("Skeleton"))
+    ("Hunt Wolf"      ("Militia" "Wolf") 5.0 ("RawMeat" "Bone") ("Wolf"))))
 ```
 
 ---
