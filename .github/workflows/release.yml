@@ -60,6 +60,7 @@ jobs:
           cp -r docs "$STAGING/"
           cp -r scripts "$STAGING/"
           [ -d "web" ] && cp -r web "$STAGING/" || true
+          [ -d "examples" ] && cp -r examples "$STAGING/" || true
           tar czvf "cardcraft-${{ matrix.target }}.tar.gz" "$STAGING"
 
       - name: Package artifacts (Windows)
@@ -73,6 +74,7 @@ jobs:
           Copy-Item -Recurse docs -Destination $staging
           Copy-Item -Recurse scripts -Destination $staging
           if (Test-Path web) { Copy-Item -Recurse web -Destination $staging }
+          if (Test-Path examples) { Copy-Item -Recurse examples -Destination $staging }
           Compress-Archive -Path $staging -DestinationPath "cardcraft-${{ matrix.target }}.zip"
 
       - name: Upload binaries to GitHub Release
