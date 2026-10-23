@@ -141,6 +141,8 @@
             if (data.feedback && data.feedback !== "OK") {
               addLog("Feedback: " + data.feedback);
             }
+          } else if (data.message) {
+            addLog(data.message);
           }
         } catch (e) {
           addLog("Message: " + event.data);

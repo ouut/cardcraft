@@ -1,5 +1,7 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::{Arc, Mutex};
 use anyhow::{anyhow, Result};
 use futures_util::{SinkExt, StreamExt};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -7,12 +9,69 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::protocol::Message;
 
-use crate::engine::GameEngine;
+use crate::engine::{GameEngine, NetEvent};
 
 pub static NEXT_CLIENT_ID: AtomicIsize = AtomicIsize::new(10);
 
 pub fn get_next_client_id() -> isize {
     NEXT_CLIENT_ID.fetch_add(1, Ordering::SeqCst)
+}
+
+pub type ClientSender = mpsc::UnboundedSender<String>;
+
+/// Multi-client network hub routing events (broadcast, send, whisper)
+#[derive(Clone, Default)]
+pub struct ClientHub {
+    clients: Arc<Mutex<HashMap<isize, ClientSender>>>,
+}
+
+impl ClientHub {
+    pub fn new() -> Self {
+        Self {
+            clients: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    pub fn register(&self, client_id: isize, tx: ClientSender) {
+        self.clients.lock().unwrap().insert(client_id, tx);
+    }
+
+    pub fn unregister(&self, client_id: isize) {
+        self.clients.lock().unwrap().remove(&client_id);
+    }
+
+    pub fn broadcast(&self, msg: &str) {
+        let clients = self.clients.lock().unwrap();
+        for tx in clients.values() {
+            let _ = tx.send(msg.to_string());
+        }
+    }
+
+    pub fn send_to(&self, client_id: isize, msg: &str) {
+        let clients = self.clients.lock().unwrap();
+        if let Some(tx) = clients.get(&client_id) {
+            let _ = tx.send(msg.to_string());
+        }
+    }
+
+    pub fn dispatch_events(&self, events: Vec<NetEvent>) {
+        for ev in events {
+            match ev {
+                NetEvent::Broadcast { message } => {
+                    self.broadcast(&message);
+                }
+                NetEvent::Send { client_id, message } => {
+                    self.send_to(client_id, &message);
+                }
+                NetEvent::Whisper { from: _, to, message } => {
+                    self.send_to(to, &message);
+                }
+                NetEvent::Disconnect { client_id } => {
+                    self.unregister(client_id);
+                }
+            }
+        }
+    }
 }
 
 pub enum EngineCommand {
@@ -32,11 +91,23 @@ pub enum EngineCommand {
 #[derive(Clone)]
 pub struct EngineHandle {
     tx: mpsc::Sender<EngineCommand>,
+    hub: ClientHub,
 }
 
 impl EngineHandle {
+    pub fn new(tx: mpsc::Sender<EngineCommand>, hub: ClientHub) -> Self {
+        Self { tx, hub }
+    }
+
     pub fn from_sender(tx: mpsc::Sender<EngineCommand>) -> Self {
-        Self { tx }
+        Self {
+            tx,
+            hub: ClientHub::new(),
+        }
+    }
+
+    pub fn hub(&self) -> &ClientHub {
+        &self.hub
     }
 
     pub async fn connect(&self, client_id: isize) {
@@ -76,6 +147,8 @@ impl EngineHandle {
 }
 
 pub fn spawn_engine_actor(mut engine: GameEngine) -> (EngineHandle, tokio::task::JoinHandle<()>) {
+    let hub = ClientHub::new();
+    let hub_clone = hub.clone();
     let (tx, mut rx) = mpsc::channel::<EngineCommand>(100);
 
     // Runs on the current local thread/task holding the non-Send GameEngine
@@ -84,6 +157,8 @@ pub fn spawn_engine_actor(mut engine: GameEngine) -> (EngineHandle, tokio::task:
             match cmd {
                 EngineCommand::Connect { client_id } => {
                     engine.net_connect(client_id).ok();
+                    let events = engine.drain_net_events();
+                    hub_clone.dispatch_events(events);
                 }
                 EngineCommand::Message { client_id, text, reply } => {
                     let resp = if client_id == 0 && text.trim().starts_with('(') {
@@ -91,6 +166,8 @@ pub fn spawn_engine_actor(mut engine: GameEngine) -> (EngineHandle, tokio::task:
                     } else {
                         engine.net_message(client_id, &text).unwrap_or_else(|e| format!("Error: {:?}", e))
                     };
+                    let events = engine.drain_net_events();
+                    hub_clone.dispatch_events(events);
                     let snap_json = engine.get_snapshot().ok().and_then(|s| serde_json::to_string(&s).ok());
                     reply.send((resp, snap_json)).ok();
                 }
@@ -100,15 +177,19 @@ pub fn spawn_engine_actor(mut engine: GameEngine) -> (EngineHandle, tokio::task:
                 }
                 EngineCommand::Disconnect { client_id } => {
                     engine.net_disconnect(client_id).ok();
+                    let events = engine.drain_net_events();
+                    hub_clone.dispatch_events(events);
                 }
                 EngineCommand::Tick { dt } => {
                     engine.tick(dt).ok();
+                    let events = engine.drain_net_events();
+                    hub_clone.dispatch_events(events);
                 }
             }
         }
     });
 
-    (EngineHandle { tx }, join_handle)
+    (EngineHandle::new(tx, hub), join_handle)
 }
 
 // =============================================================================
@@ -127,6 +208,8 @@ pub async fn run_tcp_server(handle: EngineHandle, port: u16) -> Result<()> {
 
         tokio::spawn(async move {
             println!("[TCP Server] New client #{} connected from {:?}", cid, peer_addr);
+            let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
+            h.hub().register(cid, out_tx);
             h.connect(cid).await;
 
             let (reader, mut writer) = socket.into_split();
@@ -134,25 +217,37 @@ pub async fn run_tcp_server(handle: EngineHandle, port: u16) -> Result<()> {
             let mut line = String::new();
 
             loop {
-                line.clear();
-                match buf_reader.read_line(&mut line).await {
-                    Ok(0) => break, // EOF / disconnected
-                    Ok(_) => {
-                        let trimmed = line.trim();
-                        if !trimmed.is_empty() {
-                            let (resp, _) = h.message(cid, trimmed.to_string()).await;
-                            let reply = format!("{}\n", resp);
-                            if writer.write_all(reply.as_bytes()).await.is_err() {
-                                break;
+                tokio::select! {
+                    Some(out_msg) = out_rx.recv() => {
+                        let formatted = format!("{}\n", out_msg);
+                        if writer.write_all(formatted.as_bytes()).await.is_err() {
+                            break;
+                        }
+                        writer.flush().await.ok();
+                    }
+                    res = buf_reader.read_line(&mut line) => {
+                        match res {
+                            Ok(0) => break, // EOF / disconnected
+                            Ok(_) => {
+                                let trimmed = line.trim();
+                                if !trimmed.is_empty() {
+                                    let (resp, _) = h.message(cid, trimmed.to_string()).await;
+                                    let reply = format!("{}\n", resp);
+                                    if writer.write_all(reply.as_bytes()).await.is_err() {
+                                        break;
+                                    }
+                                    writer.flush().await.ok();
+                                }
+                                line.clear();
                             }
-                            writer.flush().await.ok();
+                            Err(_) => break,
                         }
                     }
-                    Err(_) => break,
                 }
             }
 
             println!("[TCP Server] Client #{} disconnected.", cid);
+            h.hub().unregister(cid);
             h.disconnect(cid).await;
         });
     }
@@ -212,6 +307,8 @@ async fn handle_websocket(socket: TcpStream, handle: EngineHandle) {
 
     let cid = get_next_client_id();
     println!("[WS Server] Client #{} connected via WebSocket.", cid);
+    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
+    handle.hub().register(cid, out_tx);
     handle.connect(cid).await;
 
     let (mut ws_sender, mut ws_receiver) = ws_stream.split();
@@ -221,25 +318,37 @@ async fn handle_websocket(socket: TcpStream, handle: EngineHandle) {
         ws_sender.send(Message::Text(snap_json.into())).await.ok();
     }
 
-    while let Some(msg_res) = ws_receiver.next().await {
-        match msg_res {
-            Ok(Message::Text(txt)) => {
-                let trimmed = txt.trim();
-                let (resp, snap_json) = handle.message(cid, trimmed.to_string()).await;
-
+    loop {
+        tokio::select! {
+            Some(out_msg) = out_rx.recv() => {
                 let payload = serde_json::json!({
-                    "type": "response",
-                    "feedback": resp,
-                    "snapshot": snap_json.and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                    "type": "event",
+                    "message": out_msg
                 });
                 ws_sender.send(Message::Text(payload.to_string().into())).await.ok();
             }
-            Ok(Message::Close(_)) | Err(_) => break,
-            _ => {}
+            msg_res = ws_receiver.next() => {
+                match msg_res {
+                    Some(Ok(Message::Text(txt))) => {
+                        let trimmed = txt.trim();
+                        let (resp, snap_json) = handle.message(cid, trimmed.to_string()).await;
+
+                        let payload = serde_json::json!({
+                            "type": "response",
+                            "feedback": resp,
+                            "snapshot": snap_json.and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                        });
+                        ws_sender.send(Message::Text(payload.to_string().into())).await.ok();
+                    }
+                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                    _ => {}
+                }
+            }
         }
     }
 
     println!("[WS Server] Client #{} disconnected.", cid);
+    handle.hub().unregister(cid);
     handle.disconnect(cid).await;
 }
 

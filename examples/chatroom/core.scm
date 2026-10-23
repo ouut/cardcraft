@@ -146,22 +146,26 @@
 
 ;; 钩子 1: 新客户端连入
 (define (net-on-connect! cid)
-  (let ([def-name (string-append "Guest_" (number->string cid))])
-    (set! *net-clients* (append *net-clients* (list (list cid def-name))))
-    (let ([join-msg (string-append ANSI-CYAN "*** " def-name " joined the chatroom ***" ANSI-RESET)])
-      (system-net-broadcast! join-msg)
-      (add-message! join-msg))
-    (system-net-send! cid (string-append ANSI-GREEN "=== Welcome to CardCraft Chatroom, " def-name "! ===" ANSI-RESET))
-    (system-net-send! cid (string-append ANSI-GRAY "Commands: /nick <name>, /w <user> <msg>, /who, /help" ANSI-RESET))
-    "OK"))
+  (if (find-client cid)
+      "OK"
+      (let ([def-name (if (= cid 0) "Host" (string-append "Guest_" (number->string cid)))])
+        (set! *net-clients* (append *net-clients* (list (list cid def-name))))
+        (when (> cid 0)
+          (let ([join-msg (string-append ANSI-CYAN "*** " def-name " joined the chatroom ***" ANSI-RESET)])
+            (system-net-broadcast! join-msg)
+            (add-message! join-msg))
+          (system-net-send! cid (string-append ANSI-GREEN "=== Welcome to CardCraft Chatroom, " def-name "! ===" ANSI-RESET))
+          (system-net-send! cid (string-append ANSI-GRAY "Commands: /nick <name>, /w <user> <msg>, /who, /help" ANSI-RESET)))
+        "OK")))
 
 ;; 钩子 2: 客户端断开
 (define (net-on-disconnect! cid)
   (let ([name (get-client-name cid)])
     (remove-client! cid)
-    (let ([leave-msg (string-append ANSI-GRAY "*** " name " left the chatroom ***" ANSI-RESET)])
-      (system-net-broadcast! leave-msg)
-      (add-message! leave-msg))
+    (when (> cid 0)
+      (let ([leave-msg (string-append ANSI-GRAY "*** " name " left the chatroom ***" ANSI-RESET)])
+        (system-net-broadcast! leave-msg)
+        (add-message! leave-msg)))
     "OK"))
 
 ;; 钩子 3: 消息到达 (包括键盘直通与网络包)
@@ -205,7 +209,8 @@
 ;;; --- 聊天业务分发逻辑 ---
 (define (dispatch-chat! cid text)
   (let* ([sender (get-client-name cid)]
-         [raw-line (if (starts-with? text "/")
+         [is-slash? (starts-with? text "/")]
+         [raw-line (if is-slash?
                        (substring text 1 (string-length text))
                        text)]
          [tokens (split-spaces raw-line)])
@@ -214,8 +219,8 @@
         (let ([cmd (car tokens)]
               [args (cdr tokens)])
           (cond
-            ;; 1. 改名: /nick <new-name>
-            [(equal? cmd "nick")
+            ;; 1. 改名: /nick <new-name> or nick <new-name>
+            [(and (or is-slash? (equal? cmd "nick")) (equal? cmd "nick"))
              (if (null? args)
                  (begin
                    (system-net-send! cid (string-append ANSI-RED "Usage: /nick <new-name>" ANSI-RESET))
@@ -232,16 +237,17 @@
                            (add-message! notice))
                          "OK"))))]
 
-            ;; 2. 查在线成员: /who or /users
-            [(or (equal? cmd "who") (equal? cmd "users") (equal? cmd "online"))
+            ;; 2. 查在线成员: /who or /users or /online
+            [(and (or is-slash? (null? args)) (member cmd '("who" "users" "online")))
              (let* ([names (map (lambda (c) (cadr c)) *net-clients*)]
                     [msg (string-append ANSI-CYAN "Online users (" (number->string (length names)) "): " ANSI-BOLD (join-strings names ", ") ANSI-RESET)])
                (system-net-send! cid msg)
                (when (= cid 0) (add-message! msg))
                "OK")]
 
-            ;; 3. 私聊: /w <user> <message...> or /tell <user> <message...>
-            [(or (equal? cmd "w") (equal? cmd "tell") (equal? cmd "whisper"))
+            ;; 3. 私聊: /w <user> <message...> or /tell <user> <message...> or /whisper <user> <message...>
+            [(and (or is-slash? (and (member cmd '("w" "tell" "whisper")) (not (null? args)) (find-client-by-name (car args))))
+                  (member cmd '("w" "tell" "whisper")))
              (if (< (length args) 2)
                  (begin
                    (system-net-send! cid (string-append ANSI-RED "Usage: /w <user> <message...>" ANSI-RESET))
@@ -263,13 +269,13 @@
                          "OK"))))]
 
             ;; 4. 清屏: /clear
-            [(equal? cmd "clear")
+            [(and (or is-slash? (null? args)) (equal? cmd "clear"))
              (when (= cid 0) (set! *chat-history* '()))
              (system-net-send! cid "Cleared")
              "OK"]
 
             ;; 5. 帮助: /help
-            [(equal? cmd "help")
+            [(and (or is-slash? (null? args)) (equal? cmd "help"))
              (let ([help-text (string-append
                                ANSI-YELLOW "Chatroom Commands:\n"
                                "  /nick <name>        - Change your nickname\n"

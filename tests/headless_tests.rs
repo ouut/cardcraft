@@ -517,8 +517,15 @@ async fn test_web_server_static_file_and_websocket() {
         // Send command over WebSocket
         ws_stream.send(Message::Text("s 1 2".into())).await.unwrap();
 
-        // Read response
-        let resp_msg = ws_stream.next().await.unwrap().unwrap();
+        // Read response (skipping any async welcome events)
+        let resp_msg = loop {
+            let msg = ws_stream.next().await.unwrap().unwrap();
+            if let Message::Text(ref txt) = msg {
+                if txt.contains("response") {
+                    break msg;
+                }
+            }
+        };
         if let Message::Text(txt) = resp_msg {
             assert!(txt.contains("response"));
             assert!(txt.contains("OK"));
@@ -585,7 +592,14 @@ async fn test_p2p_bridge_websocket_and_tcp() {
         // Send CAD command over WebSocket to local bridge -> forwarded to Host over Iroh QUIC
         ws_stream.send(Message::Text("s 1 2".into())).await.unwrap();
 
-        let resp_msg = ws_stream.next().await.unwrap().unwrap();
+        let resp_msg = loop {
+            let msg = ws_stream.next().await.unwrap().unwrap();
+            if let Message::Text(ref txt) = msg {
+                if txt.contains("response") {
+                    break msg;
+                }
+            }
+        };
         if let Message::Text(txt) = resp_msg {
             assert!(txt.contains("response"));
             assert!(txt.contains("OK"));
@@ -773,6 +787,280 @@ fn test_fullscreen_raw_grid_dungeon_and_key_streaming() {
     assert!(frame3.contains("Gold: 10G"));
 
     std::fs::remove_dir_all(&custom_dir).ok();
+}
+
+#[tokio::test]
+async fn test_chatroom_multi_client_tcp_and_whisper() {
+    let local = tokio::task::LocalSet::new();
+
+    local.run_until(async {
+        let chatroom_dir = std::path::PathBuf::from("examples/chatroom");
+        let engine = GameEngine::with_game_dir(&chatroom_dir).expect("Failed to load chatroom example");
+        let (handle, engine_task) = spawn_engine_actor(engine);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let h_server = handle.clone();
+        tokio::spawn(async move {
+            run_tcp_server(h_server, port).await.ok();
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // 1. Client 1 connects
+        let stream1 = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap();
+        let (r1, mut w1) = stream1.into_split();
+        let mut reader1 = BufReader::new(r1);
+
+        // Client 1 reads welcome banner lines
+        let line = loop {
+            let mut l = String::new();
+            reader1.read_line(&mut l).await.unwrap();
+            if l.contains("Welcome to CardCraft Chatroom") {
+                break l;
+            }
+        };
+        assert!(line.contains("Welcome to CardCraft Chatroom"));
+
+        // 2. Client 2 connects
+        let stream2 = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap();
+        let (r2, mut w2) = stream2.into_split();
+        let mut reader2 = BufReader::new(r2);
+
+        // Client 2 reads welcome banner
+        let line2 = loop {
+            let mut l = String::new();
+            reader2.read_line(&mut l).await.unwrap();
+            if l.contains("Welcome to CardCraft Chatroom") {
+                break l;
+            }
+        };
+        assert!(line2.contains("Welcome to CardCraft Chatroom"));
+
+        // Client 1 should receive the broadcast announcement that Guest joined
+        let c1_join = loop {
+            let mut l = String::new();
+            reader1.read_line(&mut l).await.unwrap();
+            if l.contains("joined the chatroom") {
+                break l;
+            }
+        };
+        assert!(c1_join.contains("joined the chatroom"));
+
+        // 3. Client 1 changes nick to Alice: /nick Alice
+        w1.write_all(b"/nick Alice\n").await.unwrap();
+        w1.flush().await.unwrap();
+
+        // Client 2 reads the nick broadcast
+        let c2_nick = loop {
+            let mut l = String::new();
+            reader2.read_line(&mut l).await.unwrap();
+            if l.contains("is now known as Alice") {
+                break l;
+            }
+        };
+        assert!(c2_nick.contains("Alice"));
+
+        // 4. Client 2 changes nick to Bob: /nick Bob
+        w2.write_all(b"/nick Bob\n").await.unwrap();
+        w2.flush().await.unwrap();
+
+        // Client 1 reads the nick broadcast
+        let c1_nick = loop {
+            let mut l = String::new();
+            reader1.read_line(&mut l).await.unwrap();
+            if l.contains("is now known as Bob") {
+                break l;
+            }
+        };
+        assert!(c1_nick.contains("Bob"));
+
+        // 5. Client 1 speaks in public chat: Hello everyone!
+        w1.write_all(b"Hello everyone!\n").await.unwrap();
+        w1.flush().await.unwrap();
+
+        // Client 2 receives the public message
+        let c2_msg = loop {
+            let mut l = String::new();
+            reader2.read_line(&mut l).await.unwrap();
+            if l.contains("Hello everyone!") {
+                break l;
+            }
+        };
+        assert!(c2_msg.contains("Alice"));
+        assert!(c2_msg.contains("Hello everyone!"));
+
+        // 6. Client 1 sends private message (whisper) to Bob: /w Bob TopSecret42
+        w1.write_all(b"/w Bob TopSecret42\n").await.unwrap();
+        w1.flush().await.unwrap();
+
+        // Client 2 (Bob) receives [Private from Alice]: TopSecret42
+        let c2_whisper = loop {
+            let mut l = String::new();
+            reader2.read_line(&mut l).await.unwrap();
+            if l.contains("TopSecret42") {
+                break l;
+            }
+        };
+        assert!(c2_whisper.contains("Private from Alice"));
+        assert!(c2_whisper.contains("TopSecret42"));
+
+        // Client 1 receives [Private to Bob]: TopSecret42
+        let c1_whisper = loop {
+            let mut l = String::new();
+            reader1.read_line(&mut l).await.unwrap();
+            if l.contains("TopSecret42") {
+                break l;
+            }
+        };
+        assert!(c1_whisper.contains("Private to Bob"));
+
+        // 7. Client 3 connects (Charlie)
+        let stream3 = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap();
+        let (r3, mut w3) = stream3.into_split();
+        let mut reader3 = BufReader::new(r3);
+
+        // Read welcome lines
+        let l3 = loop {
+            let mut l = String::new();
+            reader3.read_line(&mut l).await.unwrap();
+            if l.contains("Welcome to CardCraft Chatroom") {
+                break l;
+            }
+        };
+        assert!(l3.contains("Welcome to CardCraft Chatroom"));
+
+        // Client 3 executes /who
+        w3.write_all(b"/who\n").await.unwrap();
+        w3.flush().await.unwrap();
+
+        let c3_who = loop {
+            let mut l = String::new();
+            reader3.read_line(&mut l).await.unwrap();
+            if l.contains("Online users") {
+                break l;
+            }
+        };
+        assert!(c3_who.contains("Host"));
+        assert!(c3_who.contains("Alice"));
+        assert!(c3_who.contains("Bob"));
+
+        // 8. Verify Host snapshot has the chat messages
+        let snap = handle.get_snapshot_view().await.expect("Failed to get host snapshot");
+        let frame = snap.grid.join("\n");
+        assert!(frame.contains("CardCraft Chatroom"));
+        assert!(frame.contains("Alice"));
+        assert!(frame.contains("Bob"));
+        assert!(frame.contains("Hello everyone!"));
+
+        drop(handle);
+        engine_task.abort();
+    }).await;
+}
+
+#[tokio::test]
+async fn test_chatroom_multi_client_websocket() {
+    let local = tokio::task::LocalSet::new();
+
+    local.run_until(async {
+        let chatroom_dir = std::path::PathBuf::from("examples/chatroom");
+        let engine = GameEngine::with_game_dir(&chatroom_dir).expect("Failed to load chatroom example");
+        let (handle, engine_task) = spawn_engine_actor(engine);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let h_server = handle.clone();
+        let web_dir = chatroom_dir.join("web");
+        tokio::spawn(async move {
+            run_web_server(h_server, port, web_dir).await.ok();
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let ws_url = format!("ws://127.0.0.1:{}", port);
+
+        // 1. WS Client 1 connects
+        let (mut ws1, _) = tokio_tungstenite::connect_async(&ws_url).await.expect("WS1 connect failed");
+        // Read initial snapshot
+        let init1 = ws1.next().await.unwrap().unwrap();
+        assert!(init1.to_string().contains("grid"));
+
+        // 2. WS Client 2 connects
+        let (mut ws2, _) = tokio_tungstenite::connect_async(&ws_url).await.expect("WS2 connect failed");
+        let init2 = ws2.next().await.unwrap().unwrap();
+        assert!(init2.to_string().contains("grid"));
+
+        // 3. WS Client 1 renames to Alice
+        ws1.send(Message::Text("/nick Alice".into())).await.unwrap();
+
+        // WS Client 2 should receive the announcement
+        let nick_msg = loop {
+            let msg = ws2.next().await.unwrap().unwrap();
+            let txt = msg.to_string();
+            if txt.contains("is now known as Alice") {
+                break txt;
+            }
+        };
+        assert!(nick_msg.contains("Alice"));
+
+        // 4. WS Client 2 renames to Bob
+        ws2.send(Message::Text("/nick Bob".into())).await.unwrap();
+
+        // WS Client 1 receives the announcement
+        let bob_msg = loop {
+            let msg = ws1.next().await.unwrap().unwrap();
+            let txt = msg.to_string();
+            if txt.contains("is now known as Bob") {
+                break txt;
+            }
+        };
+        assert!(bob_msg.contains("Bob"));
+
+        // 5. WS Client 1 sends public chat
+        ws1.send(Message::Text("Greetings from Web!".into())).await.unwrap();
+
+        // WS Client 2 receives the public chat event
+        let chat_msg = loop {
+            let msg = ws2.next().await.unwrap().unwrap();
+            let txt = msg.to_string();
+            if txt.contains("Greetings from Web!") {
+                break txt;
+            }
+        };
+        assert!(chat_msg.contains("Alice"));
+        assert!(chat_msg.contains("Greetings from Web!"));
+
+        // 6. WS Client 1 sends whisper to Bob: /w Bob WebSecret99
+        ws1.send(Message::Text("/w Bob WebSecret99".into())).await.unwrap();
+
+        // WS Client 2 (Bob) receives whisper
+        let whisper_msg = loop {
+            let msg = ws2.next().await.unwrap().unwrap();
+            let txt = msg.to_string();
+            if txt.contains("WebSecret99") {
+                break txt;
+            }
+        };
+        assert!(whisper_msg.contains("Private from Alice"));
+        assert!(whisper_msg.contains("WebSecret99"));
+
+        // WS Client 1 receives whisper echo
+        let whisper_echo = loop {
+            let msg = ws1.next().await.unwrap().unwrap();
+            let txt = msg.to_string();
+            if txt.contains("WebSecret99") {
+                break txt;
+            }
+        };
+        assert!(whisper_echo.contains("Private to Bob"));
+
+        drop(handle);
+        engine_task.abort();
+    }).await;
 }
 
 

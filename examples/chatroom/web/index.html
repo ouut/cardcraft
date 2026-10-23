@@ -116,9 +116,14 @@
       ws.onmessage = (e) => {
         try {
           const data = JSON.parse(e.data);
-          if (data.grid && data.grid.length > 0) {
-            chatBox.innerHTML = ansiToHtml(data.grid.join("\n"));
+          const grid = data.grid || (data.snapshot && data.snapshot.grid);
+          if (grid && grid.length > 0) {
+            chatBox.innerHTML = ansiToHtml(grid.join("\n"));
             chatBox.scrollTop = chatBox.scrollHeight;
+          } else if (data.message) {
+            appendMessage(data.message);
+          } else if (data.feedback && data.feedback !== "OK") {
+            appendMessage(data.feedback);
           }
         } catch (_) {
           appendMessage(e.data);
